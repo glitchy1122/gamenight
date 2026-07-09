@@ -28,6 +28,10 @@ public sealed class TrayIcon : IDisposable
             PauseToggled?.Invoke(_paused);
         };
 
+        // BeginInvoke needs a native handle; a ContextMenuStrip only creates
+        // one when first opened. Force it now, or early status updates throw.
+        _ = menu.Handle;
+
         _icon = new NotifyIcon
         {
             Icon = System.Drawing.SystemIcons.Application,
@@ -36,11 +40,19 @@ public sealed class TrayIcon : IDisposable
             ContextMenuStrip = menu,
         };
 
-        link.StatusChanged += s => menu.BeginInvoke(() =>
+        link.StatusChanged += s =>
         {
-            status.Text = s;
-            _icon.Text = $"GameNight — {s}"[..Math.Min(63, $"GameNight — {s}".Length)]; // tooltip cap is 63 chars
-        });
+            try
+            {
+                menu.BeginInvoke(() =>
+                {
+                    status.Text = s;
+                    string tip = $"GameNight — {s}";
+                    _icon.Text = tip[..Math.Min(63, tip.Length)];
+                });
+            }
+            catch { /* UI cosmetics must NEVER kill the connection loop */ }
+        };
     }
 
     public void Dispose()

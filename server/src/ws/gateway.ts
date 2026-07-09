@@ -37,9 +37,10 @@ export function attachGateway(opts: {
   const agentByUser = new Map<string, Conn>();
   const dashboards = new Set<Conn>();
 
-  // We own the upgrade: only /ws becomes a WebSocket; everything else 404s.
   opts.httpServer.on('upgrade', (req, socket, head) => {
+    log.info({ url: req.url }, 'WS UPGRADE attempt');
     if (!req.url?.startsWith('/ws')) {
+      log.warn({ url: req.url }, 'WS UPGRADE rejected (not /ws)');
       socket.destroy();
       return;
     }
@@ -68,6 +69,7 @@ export function attachGateway(opts: {
   reaper.unref(); // never keep the process alive just to reap
 
   wss.on('connection', (sock: WebSocket, req: IncomingMessage) => {
+    log.info('WS connection handler fired');
     let conn: Conn | null = null;
 
     // A socket that never authenticates is dead weight — cut it loose.
@@ -76,6 +78,7 @@ export function attachGateway(opts: {
     }, HELLO_TIMEOUT_MS);
 
     sock.on('message', (raw) => {
+      log.info({ raw: String(raw).slice(0, 100) }, 'WS message received');
       void (async () => {
         let msg: AgentToServer | DashboardHello;
         try {
@@ -158,6 +161,7 @@ export function attachGateway(opts: {
               presence.heartbeat(conn.userId);
               return;
             case 'state':
+              log.info({ state: msg.state, radmin: msg.radmin }, 'STATE received from agent');
               presence.setState(conn.userId, msg.state, msg.radmin);
               return;
             default:

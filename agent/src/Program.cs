@@ -41,12 +41,11 @@ internal static class Program
         tray.PauseToggled += p => { paused = p; if (p) link.ReportState("idle", RadminDetector.Detect()); };
 
         RadminInfo radmin = RadminDetector.Detect();
-        int tick = 0;
         var timer = new System.Windows.Forms.Timer { Interval = 5000 };
         timer.Tick += (_, _) =>
         {
             if (paused) return;
-            if (tick++ % 6 == 0) radmin = RadminDetector.Detect(); // every 30s
+            radmin = RadminDetector.Detect(); // every 5s — cheap, and catches Radmin connecting after launch
             string state = GameDetector.IsFarCry2Running() ? "in_game" : "online";
             link.ReportState(state, radmin);
         };

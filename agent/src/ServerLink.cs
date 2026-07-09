@@ -18,6 +18,7 @@ public sealed class ServerLink : IDisposable
     private string _lastState = "";
     private RadminInfo _lastRadmin = new(false, null);
     private readonly object _gate = new();
+    private readonly SemaphoreSlim _sendLock = new(1, 1);
 
     public event Action<string>? StatusChanged; // for the tray tooltip
 
@@ -37,11 +38,27 @@ public sealed class ServerLink : IDisposable
     {
         lock (_gate)
         {
-            if (state == _lastState && radmin == _lastRadmin) return;
+            if (state == _lastState && radmin == _lastRadmin)
+            {
+                Log($"SKIP no-change state={state} ip={radmin.Ip}");
+                return;
+            }
             _lastState = state;
             _lastRadmin = radmin;
         }
+        Log($"SEND state={state} ip={radmin.Ip} socket={_sock?.State}");
         _ = SendAsync(StateMsg.Create(state, radmin));
+    }
+
+    private static void Log(string msg)
+    {
+        try
+        {
+            var dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "GameNight");
+            Directory.CreateDirectory(dir);
+            File.AppendAllText(Path.Combine(dir, "link.log"), $"{DateTime.Now:HH:mm:ss} {msg}\r\n");
+        }
+        catch { }
     }
 
     private async Task RunAsync(CancellationToken ct)
@@ -60,7 +77,11 @@ public sealed class ServerLink : IDisposable
 
                 // re-announce current state after every (re)connect —
                 // the server's registry died with the old socket
-                lock (_gate) { if (_lastState != "") _ = SendAsync(StateMsg.Create(_lastState, _lastRadmin)); }
+                // On every (re)connect, forget prior state and force a fresh
+                // detect-and-send AFTER the socket is confirmed open — our
+                // first pre-connect send may have been dropped (the IP bug).
+                lock (_gate) { _lastState = ""; _lastRadmin = new RadminInfo(false, null); }
+                ReportState(GameDetector.IsFarCry2Running() ? "in_game" : "online", RadminDetector.Detect());
 
                 using var hb = new PeriodicTimer(TimeSpan.FromSeconds(15));
                 var recv = ReceiveLoopAsync(_sock, ct);
@@ -104,16 +125,18 @@ public sealed class ServerLink : IDisposable
         catch { /* socket died; outer loop reconnects */ }
     }
 
-    private async Task SendAsync<T>(T msg)
+   private async Task SendAsync<T>(T msg)
     {
         var s = _sock;
         if (s is null || s.State != WebSocketState.Open) return;
+        await _sendLock.WaitAsync(_cts.Token);
         try
         {
             byte[] bytes = JsonSerializer.SerializeToUtf8Bytes(msg);
             await s.SendAsync(bytes, WebSocketMessageType.Text, true, _cts.Token);
         }
         catch (Exception ex) { Debug.WriteLine($"[ServerLink.send] {ex.Message}"); }
+        finally { _sendLock.Release(); }
     }
 
     public void Dispose()
