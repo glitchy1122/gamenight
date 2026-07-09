@@ -1,0 +1,19 @@
+# SDD §27 workflow 1: every push/PR must lint, typecheck, and build.
+# Red pipeline = unmergeable. This is the safety net that lets a solo dev move fast.
+name: ci
+on:
+  push: { branches: [main] }
+  pull_request:
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm }
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm run build
+      - name: Docker build (prove the image compiles)
+        run: docker build -f infra/Dockerfile .

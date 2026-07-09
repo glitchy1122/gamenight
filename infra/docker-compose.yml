@@ -1,0 +1,24 @@
+# Local "like production" run: same image Render runs, plus a local Postgres.
+# Dev/prod parity is the entire point of Docker (SDD §26).
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: gamenight
+      POSTGRES_PASSWORD: localdev        # local only — real creds live in Render/Neon env
+      POSTGRES_DB: gamenight
+    ports: ["5432:5432"]
+    volumes: [pgdata:/var/lib/postgresql/data]
+
+  server:
+    build:
+      context: ..
+      dockerfile: infra/Dockerfile
+    environment:
+      PORT: "8080"
+      DATABASE_URL: postgres://gamenight:localdev@db:5432/gamenight
+    ports: ["8080:8080"]
+    depends_on: [db]
+
+volumes:
+  pgdata:
