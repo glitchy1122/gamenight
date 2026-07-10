@@ -73,4 +73,16 @@ export const api = {
     fetch(`/api/v1/matches/${id}/share-text`).then((r) =>
       json<{ text: string; waUrl: string }>(r),
     ),
+  setup: () =>
+    fetch("/api/v1/setup").then((r) =>
+      json<{
+        gameUrl: string | null;
+        radminNetwork: string | null;
+        agent: {
+          version: string | null;
+          url: string | null;
+          sha256: string | null;
+        };
+      }>(r),
+    ),
 };

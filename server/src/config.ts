@@ -13,6 +13,7 @@ export type Config = {
   adminEmail: string | undefined;
   /** Agent download metadata — SDD §22. Set via env; the exe lives on GitHub Releases. */
   agent: { version: string | null; url: string | null; sha256: string | null };
+  setup: { gameUrl: string | null; radminNetwork: string | null };
 };
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
@@ -34,6 +35,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       version: env.AGENT_VERSION ?? null,
       url: env.AGENT_DOWNLOAD_URL ?? null,
       sha256: env.AGENT_SHA256 ?? null,
+    },
+    setup: {
+      gameUrl: env.GAME_DOWNLOAD_URL ?? null,
+      radminNetwork: env.RADMIN_NETWORK ?? null,
     },
   };
 }

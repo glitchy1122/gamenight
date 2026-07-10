@@ -18,7 +18,7 @@ import { getUserBySession } from '../modules/auth/sessions.js';
 import { PresenceRegistry, REAP_AFTER_MS } from '../modules/presence/registry.js';
 import { MetricStore } from '../modules/metrics/store.js';
 import { recommendHost, type Candidate } from '../modules/recommend/engine.js';
-import type { AgentToServer, DashboardHello, Peer } from '../protocol/messages.js';
+import type { AgentToServer, DashboardToServer, Peer } from '../protocol/messages.js';
 
 const HELLO_TIMEOUT_MS = 10_000;
 const MATRIX_BROADCAST_MS = 5_000; // recompute + push matrix at most this often
@@ -119,7 +119,7 @@ export function attachGateway(opts: {
 
     sock.on('message', (raw) => {
       void (async () => {
-        let msg: AgentToServer | DashboardHello;
+        let msg: AgentToServer | DashboardToServer;
         try {
           msg = JSON.parse(String(raw));
         } catch {
@@ -191,6 +191,32 @@ export function attachGateway(opts: {
         }
 
         // ---- post-hello messages ----
+        if (conn.kind === 'dashboard') {
+          if (msg.t === 'run_diagnostics') {
+            const agent = agentByUser.get(conn.userId);
+            if (agent && agent.sock.readyState === WebSocket.OPEN) {
+              agent.sock.send(JSON.stringify({ t: 'diagnose' }));
+            } else {
+              conn.sock.send(
+                JSON.stringify({
+                  t: 'diagnostics_result',
+                  userId: conn.userId,
+                  checks: [
+                    {
+                      id: 'agent',
+                      label: 'Agent connected',
+                      status: 'fail',
+                      detail: 'Your agent is not connected.',
+                      fix: 'Start the GameNight agent on your gaming PC, then run diagnostics again.',
+                    },
+                  ],
+                }),
+              );
+            }
+          }
+          return;
+        }
+
         if (conn.kind === 'agent') {
           switch (msg.t) {
             case 'hb':
@@ -219,6 +245,12 @@ export function attachGateway(opts: {
             case 'metrics':
               metrics.ingest(conn.userId, msg.peers);
               return;
+            case 'diagnostics_result': {
+              const out = JSON.stringify(msg);
+              for (const d of dashboards)
+                if (d.sock.readyState === WebSocket.OPEN) d.sock.send(out);
+              return;
+            }
             default:
               log.warn({ t: (msg as { t?: string }).t }, 'unknown agent message');
           }

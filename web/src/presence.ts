@@ -5,17 +5,20 @@
  * recommendation. Reconnects with backoff — the same resilience pattern the
  * C# agent uses, in miniature.
  */
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type {
   PresenceUser,
   MatrixCell,
   HostRecommendation,
+  DiagCheck,
 } from "../../server/src/protocol/messages";
 
 export type LiveData = {
   presence: Map<string, PresenceUser>;
   matrix: MatrixCell[];
   recommendation: HostRecommendation;
+  diagnostics: DiagCheck[] | null;
+  runDiagnostics: () => void;
 };
 
 export function useLiveData(): LiveData {
@@ -25,6 +28,8 @@ export function useLiveData(): LiveData {
   const [matrix, setMatrix] = useState<MatrixCell[]>([]);
   const [recommendation, setRecommendation] =
     useState<HostRecommendation>(null);
+  const [diagnostics, setDiagnostics] = useState<DiagCheck[] | null>(null);
+  const sockRef = useRef<WebSocket | null>(null);
 
   useEffect(() => {
     let sock: WebSocket | null = null;
@@ -37,6 +42,7 @@ export function useLiveData(): LiveData {
 
       sock.onopen = () => {
         attempt = 0;
+        sockRef.current = sock;
         sock?.send(JSON.stringify({ t: "hello", role: "dashboard" }));
       };
 
@@ -48,7 +54,8 @@ export function useLiveData(): LiveData {
               t: "matrix";
               cells: MatrixCell[];
               recommendation: HostRecommendation;
-            };
+            }
+          | { t: "diagnostics_result"; userId: string; checks: DiagCheck[] };
 
         if (msg.t === "presence") {
           setPresence(new Map(msg.users.map((u) => [u.userId, u])));
@@ -62,6 +69,8 @@ export function useLiveData(): LiveData {
         } else if (msg.t === "matrix") {
           setMatrix(msg.cells);
           setRecommendation(msg.recommendation);
+        } else if (msg.t === "diagnostics_result") {
+          setDiagnostics(msg.checks);
         }
       };
 
@@ -80,5 +89,10 @@ export function useLiveData(): LiveData {
     };
   }, []);
 
-  return { presence, matrix, recommendation };
+  const runDiagnostics = () => {
+    setDiagnostics(null);
+    sockRef.current?.send(JSON.stringify({ t: "run_diagnostics" }));
+  };
+
+  return { presence, matrix, recommendation, diagnostics, runDiagnostics };
 }

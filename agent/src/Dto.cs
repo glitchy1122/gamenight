@@ -6,7 +6,7 @@ namespace GameNight.Agent;
 
 public static class AgentInfo
 {
-    public const string Version = "0.4.0";
+    public const string Version = "0.5.0";
 }
 
 // ---- agent → server ----
@@ -63,3 +63,17 @@ public record MetricsMsg([property: JsonPropertyName("t")] string T,
 public record ToastMsg([property: JsonPropertyName("t")] string T,
                        [property: JsonPropertyName("title")] string Title,
                        [property: JsonPropertyName("body")] string Body);
+
+// ---- Phase 5: diagnostics ----
+public record DiagnoseMsg([property: JsonPropertyName("t")] string T);
+public record DiagCheckDto([property: JsonPropertyName("id")] string Id,
+                           [property: JsonPropertyName("label")] string Label,
+                           [property: JsonPropertyName("status")] string Status,
+                           [property: JsonPropertyName("detail")] string Detail,
+                           [property: JsonPropertyName("fix")] string? Fix);
+public record DiagnosticsResultMsg([property: JsonPropertyName("t")] string T,
+                                   [property: JsonPropertyName("userId")] string UserId,
+                                   [property: JsonPropertyName("checks")] List<DiagCheckDto> Checks)
+{
+    public static DiagnosticsResultMsg Create(List<DiagCheckDto> checks) => new("diagnostics_result", "", checks);
+}

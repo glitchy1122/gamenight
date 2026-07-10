@@ -36,10 +36,20 @@ internal static class Program
         using var tray = new TrayIcon(config.ServerUrl, link);
 
         // Phase 3: server sends who to probe → feed the probe engine.
-        link.PeersReceived += peers => probes.SetPeers(peers);
+        // Also keep the latest list for diagnostics (peer reachability).
+        List<Peer> currentPeers = new();
+        link.PeersReceived += peers => { currentPeers = peers; probes.SetPeers(peers); };
         // Phase 4: server sends toast notifications → show a Windows balloon.
         // Marshal to the UI thread; NotifyIcon must be touched from there.
         link.ToastReceived += (title, body) => tray.ShowToast(title, body);
+        // Phase 5: server asks the agent to self-check → run diagnostics, report.
+        link.DiagnoseRequested += () => _ = Task.Run(async () =>
+        {
+            var checks = await Diagnostics.RunAsync(currentPeers);
+            var dto = checks.ConvertAll(c => new DiagCheckDto(
+                c.Id, c.Label, c.Status.ToString().ToLowerInvariant(), c.Detail, c.Fix));
+            link.ReportDiagnostics(dto);
+        });
         link.Start();
         probes.Start();
 

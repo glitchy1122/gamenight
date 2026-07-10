@@ -5,6 +5,7 @@ import { Login } from "./pages/Login";
 import { Pending } from "./pages/Pending";
 import { Home } from "./pages/Home";
 import { Matches } from "./pages/Matches";
+import { Setup } from "./pages/Setup";
 import { Admin } from "./pages/Admin";
 
 export function useMe() {
@@ -32,6 +33,7 @@ export function App() {
         <strong>🎮 GameNight</strong>
         <Link to="/">Home</Link>
         <Link to="/matches">Matches</Link>
+        <Link to="/setup">Setup</Link>
         {user.role === "admin" && <Link to="/admin">Admin</Link>}
         <span className="grow" />
         <span className="muted">{user.displayName}</span>
@@ -45,6 +47,7 @@ export function App() {
       <Routes>
         <Route path="/" element={<Home me={user} />} />
         <Route path="/matches" element={<Matches me={user} />} />
+        <Route path="/setup" element={<Setup />} />
         <Route
           path="/admin"
           element={user.role === "admin" ? <Admin /> : <Navigate to="/" />}
