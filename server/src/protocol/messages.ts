@@ -14,10 +14,12 @@ export type RadminInfo = { connected: boolean; ip?: string };
 export type AgentHello = { t: 'hello'; token: string; agentVersion: string };
 export type AgentStateMsg = { t: 'state'; state: AgentState; radmin: RadminInfo };
 export type AgentHeartbeat = { t: 'hb' };
-export type AgentToServer = AgentHello | AgentStateMsg | AgentHeartbeat | MetricsMsg;
+export type AgentToServer =
+  AgentHello | AgentStateMsg | AgentHeartbeat | MetricsMsg | DiagnosticsResult;
 
 // ---- dashboard → server ----
 export type DashboardHello = { t: 'hello'; role: 'dashboard' };
+export type DashboardToServer = DashboardHello | RunDiagnosticsMsg;
 
 // ---- server → agent ----
 export type HelloOk = { t: 'hello_ok'; deviceId: string };
@@ -74,3 +76,15 @@ export type MatrixMsg = {
   cells: MatrixCell[];
   recommendation: HostRecommendation;
 };
+
+// ===== Phase 5: diagnostics ("Check my setup", SDD §21) =====
+export type RunDiagnosticsMsg = { t: 'run_diagnostics' };
+export type DiagnoseMsg = { t: 'diagnose' };
+export type DiagCheck = {
+  id: string;
+  label: string;
+  status: 'pass' | 'warn' | 'fail';
+  detail: string;
+  fix: string | null;
+};
+export type DiagnosticsResult = { t: 'diagnostics_result'; userId: string; checks: DiagCheck[] };

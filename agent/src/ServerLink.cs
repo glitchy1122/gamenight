@@ -23,6 +23,7 @@ public sealed class ServerLink : IDisposable
     public event Action<string>? StatusChanged; // for the tray tooltip
     public event Action<List<Peer>>? PeersReceived; // Phase 3: probe targets from server
     public event Action<string, string>? ToastReceived; // Phase 4: (title, body)
+    public event Action? DiagnoseRequested; // Phase 5
 
     public ServerLink(string serverUrl, string token)
     {
@@ -150,6 +151,9 @@ public sealed class ServerLink : IDisposable
                     var toast = System.Text.Json.JsonSerializer.Deserialize<ToastMsg>(json);
                     if (toast != null) ToastReceived?.Invoke(toast.Title, toast.Body);
                     break;
+                case "diagnose":
+                    DiagnoseRequested?.Invoke();
+                    break;
                 // hello_ok, toasts, updates handled in later phases; unknown types ignored.
             }
         }
@@ -162,6 +166,9 @@ public sealed class ServerLink : IDisposable
         if (samples.Count == 0) return;
         _ = SendAsync(MetricsMsg.Create(samples));
     }
+
+    /// <summary>Send diagnostics results to the server (Phase 5).</summary>
+    public void ReportDiagnostics(List<DiagCheckDto> checks) => _ = SendAsync(DiagnosticsResultMsg.Create(checks));
 
    private async Task SendAsync<T>(T msg)
     {
