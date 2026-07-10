@@ -196,9 +196,26 @@ export function attachGateway(opts: {
             case 'hb':
               presence.heartbeat(conn.userId);
               return;
-            case 'state':
+            case 'state': {
+              const prev = presence.get(conn.userId)?.state;
               presence.setState(conn.userId, msg.state, msg.radmin);
+              // Transition into the game → nudge everyone else to jump in.
+              if (msg.state === 'in_game' && prev !== 'in_game') {
+                const who = presence.get(conn.userId)?.displayName ?? 'Someone';
+                for (const [uid, c] of agentByUser) {
+                  if (uid === conn.userId) continue;
+                  if (c.sock.readyState === WebSocket.OPEN)
+                    c.sock.send(
+                      JSON.stringify({
+                        t: 'toast',
+                        title: `${who} started Far Cry 2`,
+                        body: 'Jump in!',
+                      }),
+                    );
+                }
+              }
               return;
+            }
             case 'metrics':
               metrics.ingest(conn.userId, msg.peers);
               return;
@@ -222,12 +239,31 @@ export function attachGateway(opts: {
     });
   });
 
+  // Push a toast to a specific user's agent (if connected). Used by the
+  // reminder scheduler and by "someone started hosting" events.
+  function sendToast(userId: string, title: string, body: string): boolean {
+    const conn = agentByUser.get(userId);
+    if (!conn || conn.sock.readyState !== WebSocket.OPEN) return false;
+    conn.sock.send(JSON.stringify({ t: 'toast', title, body }));
+    return true;
+  }
+
+  // Broadcast a toast to ALL connected agents (e.g. "match starting").
+  function broadcastToast(title: string, body: string): void {
+    for (const [, conn] of agentByUser) {
+      if (conn.sock.readyState === WebSocket.OPEN)
+        conn.sock.send(JSON.stringify({ t: 'toast', title, body }));
+    }
+  }
+
   return {
     close: () => {
       clearInterval(reaper);
       clearInterval(matrixTimer);
       wss.close();
     },
+    sendToast,
+    broadcastToast,
   };
 }
 

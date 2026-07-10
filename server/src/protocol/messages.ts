@@ -21,6 +21,7 @@ export type DashboardHello = { t: 'hello'; role: 'dashboard' };
 
 // ---- server → agent ----
 export type HelloOk = { t: 'hello_ok'; deviceId: string };
+export type ToastMsg = { t: 'toast'; title: string; body: string };
 export type ServerError = { t: 'error'; message: string };
 
 // ---- server → dashboard ----

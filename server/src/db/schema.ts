@@ -3,7 +3,7 @@
  * Teaching: constraints ARE business rules — `unique` on google_sub means
  * "one account per Google identity" is enforced by Postgres itself.
  */
-import { pgTable, uuid, text, timestamp, boolean } from 'drizzle-orm/pg-core';
+import { pgTable, uuid, text, timestamp, boolean, integer, primaryKey } from 'drizzle-orm/pg-core';
 
 export const users = pgTable('users', {
   id: uuid('id').primaryKey().defaultRandom(),
@@ -49,3 +49,38 @@ export const devices = pgTable('devices', {
 
 export type User = typeof users.$inferSelect;
 export type Device = typeof devices.$inferSelect;
+
+export const matches = pgTable('matches', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  title: text('title').notNull(),
+  scheduledAt: timestamp('scheduled_at', { withTimezone: true }).notNull(),
+  slots: integer('slots'), // null = unlimited
+  notes: text('notes'),
+  status: text('status', { enum: ['planned', 'live', 'done', 'cancelled'] })
+    .notNull()
+    .default('planned'),
+  createdBy: uuid('created_by')
+    .notNull()
+    .references(() => users.id, { onDelete: 'cascade' }),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const rsvps = pgTable(
+  'rsvps',
+  {
+    matchId: uuid('match_id')
+      .notNull()
+      .references(() => matches.id, { onDelete: 'cascade' }),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    response: text('response', { enum: ['in', 'out', 'maybe'] }).notNull(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  // Composite PK: one response per user per match. The constraint IS the
+  // business rule — the DB enforces "you can't RSVP twice" (SDD §9).
+  (t) => ({ pk: primaryKey({ columns: [t.matchId, t.userId] }) }),
+);
+
+export type Match = typeof matches.$inferSelect;
+export type Rsvp = typeof rsvps.$inferSelect;
