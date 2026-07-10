@@ -33,13 +33,28 @@ public static class Updater
     private static readonly string UpdateDir =
         Path.Combine(AgentConfig.DataDir, "update");
 
-    private static readonly HttpClient Http = new()
-    {
-        Timeout = TimeSpan.FromMinutes(5),
-    };
+    private static readonly HttpClient Http = CreateHttp();
 
     // Manual "Check for updates" can overlap the background timer; serialize.
     private static readonly SemaphoreSlim Gate = new(1, 1);
+
+    // After a swap is scheduled we are exiting — ignore further checks so a
+    // racing poll cannot toast a misleading SSL/network failure over success.
+    private static int _swapScheduled;
+
+    private static HttpClient CreateHttp()
+    {
+        var handler = new SocketsHttpHandler
+        {
+            AutomaticDecompression = System.Net.DecompressionMethods.All,
+            PooledConnectionLifetime = TimeSpan.FromMinutes(2),
+            ConnectTimeout = TimeSpan.FromSeconds(30),
+        };
+        var http = new HttpClient(handler) { Timeout = TimeSpan.FromMinutes(10) };
+        // GitHub (and some CDNs) are happier with an explicit UA on large downloads.
+        http.DefaultRequestHeaders.UserAgent.ParseAdd($"GameNightAgent/{AgentInfo.Version}");
+        return http;
+    }
 
     /// <summary>
     /// Child-process entry: wait for <paramref name="parentPid"/> to exit,
@@ -77,16 +92,27 @@ public static class Updater
     /// </summary>
     public static async Task<UpdateResult> CheckAndApplyAsync(string serverUrl, bool silentIfCurrent = true)
     {
+        if (Interlocked.CompareExchange(ref _swapScheduled, 0, 0) == 1)
+            return new(UpdateOutcome.Updated, "Update already in progress…");
+
         if (!await Gate.WaitAsync(0))
             return new(UpdateOutcome.UpToDate, "An update check is already in progress.");
 
         try
         {
-            return await CheckAndApplyCoreAsync(serverUrl, silentIfCurrent);
+            UpdateResult result = await CheckAndApplyCoreAsync(serverUrl, silentIfCurrent);
+            if (result.Outcome == UpdateOutcome.Updated)
+            {
+                Interlocked.Exchange(ref _swapScheduled, 1);
+                // Keep the gate held until process exit so nothing else can start.
+                return result;
+            }
+            return result;
         }
         finally
         {
-            Gate.Release();
+            if (Interlocked.CompareExchange(ref _swapScheduled, 0, 0) == 0)
+                Gate.Release();
         }
     }
 
@@ -149,8 +175,9 @@ public static class Updater
         }
         catch (Exception ex)
         {
-            Log($"check/apply failed: {ex.Message}");
-            return new(UpdateOutcome.Failed, $"Update failed: {ex.Message}");
+            string detail = FormatException(ex);
+            Log($"check/apply failed: {detail}");
+            return new(UpdateOutcome.Failed, $"Update failed: {detail}");
         }
     }
 
@@ -202,24 +229,61 @@ public static class Updater
 
     private static async Task DownloadAsync(string url, string destPath)
     {
-        // Unique partial name so a stale/overlapping attempt can't lock the same path.
-        string tmp = destPath + $".partial-{Environment.ProcessId}-{Guid.NewGuid():N}";
-        TryDelete(destPath);
-
-        try
+        const int maxAttempts = 3;
+        Exception? last = null;
+        for (int attempt = 1; attempt <= maxAttempts; attempt++)
         {
-            using var resp = await Http.GetAsync(url, HttpCompletionOption.ResponseHeadersRead);
-            resp.EnsureSuccessStatusCode();
-            await using (var input = await resp.Content.ReadAsStreamAsync())
-            await using (var output = new FileStream(tmp, FileMode.CreateNew, FileAccess.Write, FileShare.None))
-                await input.CopyToAsync(output);
+            string tmp = destPath + $".partial-{Environment.ProcessId}-{Guid.NewGuid():N}";
+            TryDelete(destPath);
+            try
+            {
+                using var req = new HttpRequestMessage(HttpMethod.Get, url);
+                using var resp = await Http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead);
+                resp.EnsureSuccessStatusCode();
+                await using (var input = await resp.Content.ReadAsStreamAsync())
+                await using (var output = new FileStream(tmp, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+                    await input.CopyToAsync(output);
 
-            File.Move(tmp, destPath, overwrite: true);
+                File.Move(tmp, destPath, overwrite: true);
+                return;
+            }
+            catch (Exception ex) when (attempt < maxAttempts && IsTransient(ex))
+            {
+                last = ex;
+                Log($"download attempt {attempt}/{maxAttempts} failed (will retry): {FormatException(ex)}");
+                TryDelete(tmp);
+                await Task.Delay(TimeSpan.FromSeconds(attempt * 2));
+            }
+            catch
+            {
+                TryDelete(tmp);
+                throw;
+            }
         }
-        finally
+        throw last ?? new InvalidOperationException("download failed");
+    }
+
+    private static bool IsTransient(Exception ex)
+    {
+        for (Exception? e = ex; e != null; e = e.InnerException)
         {
-            TryDelete(tmp);
+            if (e is HttpRequestException or IOException or System.Net.Sockets.SocketException)
+                return true;
+            if (e.Message.Contains("SSL", StringComparison.OrdinalIgnoreCase) ||
+                e.Message.Contains("TLS", StringComparison.OrdinalIgnoreCase))
+                return true;
         }
+        return false;
+    }
+
+    private static string FormatException(Exception ex)
+    {
+        var parts = new List<string>();
+        for (Exception? e = ex; e != null; e = e.InnerException)
+            parts.Add(e.Message);
+        string joined = string.Join(" → ", parts);
+        // Balloon tips truncate; keep the toast readable.
+        return joined.Length <= 180 ? joined : joined[..177] + "…";
     }
 
     private static string ComputeSha256Hex(string path)
