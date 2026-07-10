@@ -5,14 +5,14 @@
  * so hosting a 60MB exe on the server was never the plan.
  *
  * The values come from env so publishing a new agent version is a one-line
- * config change on Render, not a redeploy — and every download button + future
- * self-update follows automatically.
+ * config change on Render, not a redeploy — and every download button + the
+ * agent self-updater (ADR-0009) follows automatically.
  */
 import type { FastifyInstance } from 'fastify';
 import type { Config } from '../../config.js';
 
 export function registerReleaseRoutes(app: FastifyInstance, config: Config) {
-  // Public endpoint (no auth): the download button and, later, the agent's
+  // Public endpoint (no auth): the download button and the agent's
   // self-updater both read this. Returns null fields if not yet configured.
   app.get('/api/v1/agent/latest', async () => ({
     version: config.agent.version,

@@ -154,7 +154,7 @@ public sealed class ServerLink : IDisposable
                 case "diagnose":
                     DiagnoseRequested?.Invoke();
                     break;
-                // hello_ok, toasts, updates handled in later phases; unknown types ignored.
+                // hello_ok and unknown types ignored.
             }
         }
         catch (Exception ex) { Debug.WriteLine($"[ServerLink.recv] {ex.Message}"); }

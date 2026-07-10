@@ -1,4 +1,4 @@
-// The agent's entire UI (SDD §12): a tray icon and four menu items.
+// The agent's entire UI (SDD §12): a tray icon and a few menu items.
 // The real dashboard is the website; the agent stays invisible.
 namespace GameNight.Agent;
 
@@ -8,6 +8,7 @@ public sealed class TrayIcon : IDisposable
     private readonly ContextMenuStrip _menu;
     private bool _paused;
     public event Action<bool>? PauseToggled;
+    public event Action? UpdateCheckRequested;
 
     public TrayIcon(string serverUrl, ServerLink link)
     {
@@ -15,13 +16,17 @@ public sealed class TrayIcon : IDisposable
         _menu = menu;
         var status = new ToolStripMenuItem("starting…") { Enabled = false };
         var pause = new ToolStripMenuItem("Pause monitoring");
+        var checkUpdate = new ToolStripMenuItem("Check for updates");
         menu.Items.Add(status);
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add("Open dashboard", null, (_, _) =>
             System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(serverUrl) { UseShellExecute = true }));
+        menu.Items.Add(checkUpdate);
         menu.Items.Add(pause);
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add("Quit", null, (_, _) => Application.Exit());
+
+        checkUpdate.Click += (_, _) => UpdateCheckRequested?.Invoke();
 
         pause.Click += (_, _) =>
         {
