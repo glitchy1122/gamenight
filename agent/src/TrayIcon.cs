@@ -6,7 +6,9 @@ public sealed class TrayIcon : IDisposable
 {
     private readonly NotifyIcon _icon;
     private readonly ContextMenuStrip _menu;
+    private readonly ToolStripMenuItem _status;
     private bool _paused;
+    private string _connectionStatus = "starting…";
     public event Action<bool>? PauseToggled;
     public event Action? UpdateCheckRequested;
 
@@ -14,10 +16,12 @@ public sealed class TrayIcon : IDisposable
     {
         var menu = new ContextMenuStrip();
         _menu = menu;
-        var status = new ToolStripMenuItem("starting…") { Enabled = false };
+        _status = new ToolStripMenuItem(StatusLabel()) { Enabled = false };
+        var version = new ToolStripMenuItem($"Version {AgentInfo.Version}") { Enabled = false };
         var pause = new ToolStripMenuItem("Pause monitoring");
         var checkUpdate = new ToolStripMenuItem("Check for updates");
-        menu.Items.Add(status);
+        menu.Items.Add(_status);
+        menu.Items.Add(version);
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add("Open dashboard", null, (_, _) =>
             System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(serverUrl) { UseShellExecute = true }));
@@ -42,7 +46,7 @@ public sealed class TrayIcon : IDisposable
         _icon = new NotifyIcon
         {
             Icon = System.Drawing.SystemIcons.Application,
-            Text = "GameNight agent",
+            Text = TipText(),
             Visible = true,
             ContextMenuStrip = menu,
         };
@@ -53,13 +57,22 @@ public sealed class TrayIcon : IDisposable
             {
                 menu.BeginInvoke(() =>
                 {
-                    status.Text = s;
-                    string tip = $"GameNight — {s}";
-                    _icon.Text = tip[..Math.Min(63, tip.Length)];
+                    _connectionStatus = s;
+                    _status.Text = StatusLabel();
+                    _icon.Text = TipText();
                 });
             }
             catch { /* UI cosmetics must NEVER kill the connection loop */ }
         };
+    }
+
+    private string StatusLabel() => _connectionStatus;
+
+    // NotifyIcon.Text max is 63 chars on Windows.
+    private string TipText()
+    {
+        string tip = $"GameNight v{AgentInfo.Version} — {_connectionStatus}";
+        return tip[..Math.Min(63, tip.Length)];
     }
 
     /// <summary>Show a native Windows toast (balloon tip). Phase 4.</summary>

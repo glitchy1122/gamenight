@@ -38,6 +38,9 @@ public static class Updater
         Timeout = TimeSpan.FromMinutes(5),
     };
 
+    // Manual "Check for updates" can overlap the background timer; serialize.
+    private static readonly SemaphoreSlim Gate = new(1, 1);
+
     /// <summary>
     /// Child-process entry: wait for <paramref name="parentPid"/> to exit,
     /// move <paramref name="pendingPath"/> over <paramref name="targetPath"/>,
@@ -73,6 +76,21 @@ public static class Updater
     /// the process so the child can replace the exe.
     /// </summary>
     public static async Task<UpdateResult> CheckAndApplyAsync(string serverUrl, bool silentIfCurrent = true)
+    {
+        if (!await Gate.WaitAsync(0))
+            return new(UpdateOutcome.UpToDate, "An update check is already in progress.");
+
+        try
+        {
+            return await CheckAndApplyCoreAsync(serverUrl, silentIfCurrent);
+        }
+        finally
+        {
+            Gate.Release();
+        }
+    }
+
+    private static async Task<UpdateResult> CheckAndApplyCoreAsync(string serverUrl, bool silentIfCurrent)
     {
         try
         {
@@ -184,17 +202,24 @@ public static class Updater
 
     private static async Task DownloadAsync(string url, string destPath)
     {
-        string tmp = destPath + ".partial";
-        TryDelete(tmp);
+        // Unique partial name so a stale/overlapping attempt can't lock the same path.
+        string tmp = destPath + $".partial-{Environment.ProcessId}-{Guid.NewGuid():N}";
         TryDelete(destPath);
 
-        using var resp = await Http.GetAsync(url, HttpCompletionOption.ResponseHeadersRead);
-        resp.EnsureSuccessStatusCode();
-        await using (var input = await resp.Content.ReadAsStreamAsync())
-        await using (var output = File.Create(tmp))
-            await input.CopyToAsync(output);
+        try
+        {
+            using var resp = await Http.GetAsync(url, HttpCompletionOption.ResponseHeadersRead);
+            resp.EnsureSuccessStatusCode();
+            await using (var input = await resp.Content.ReadAsStreamAsync())
+            await using (var output = new FileStream(tmp, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+                await input.CopyToAsync(output);
 
-        File.Move(tmp, destPath, overwrite: true);
+            File.Move(tmp, destPath, overwrite: true);
+        }
+        finally
+        {
+            TryDelete(tmp);
+        }
     }
 
     private static string ComputeSha256Hex(string path)
