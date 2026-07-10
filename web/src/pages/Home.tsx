@@ -1,4 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
+import { Link } from "react-router-dom";
 import { api, type Me } from "../api";
 import { useLiveData } from "../presence";
 import { MeshMatrix } from "./Matrix";
@@ -13,6 +14,13 @@ const STATE_META = {
 export function Home({ me }: { me: Me }) {
   const roster = useQuery({ queryKey: ["users"], queryFn: api.users });
   const { presence, matrix, recommendation } = useLiveData();
+  const upcoming = useQuery({
+    queryKey: ["matches"],
+    queryFn: () => api.matches(true),
+  });
+  const nextMatch = (upcoming.data?.matches ?? []).find(
+    (m) => m.status !== "cancelled",
+  );
 
   const members = (roster.data?.users ?? []).filter(
     (u) => u.status === "approved",
@@ -80,6 +88,34 @@ export function Home({ me }: { me: Me }) {
           </div>
         </div>
       ))}
+      {nextMatch && (
+        <div className="card" style={{ borderColor: "#3b82f6" }}>
+          <div className="row">
+            <div className="grow">
+              <span className="muted" style={{ fontSize: ".8rem" }}>
+                NEXT GAME NIGHT
+              </span>
+              <div style={{ fontSize: "1.15rem", fontWeight: 600 }}>
+                {nextMatch.title}
+              </div>
+              <div className="muted">
+                {new Date(nextMatch.scheduledAt).toLocaleString(undefined, {
+                  weekday: "short",
+                  day: "numeric",
+                  month: "short",
+                  hour: "2-digit",
+                  minute: "2-digit",
+                })}{" "}
+                · {nextMatch.rsvps.filter((r) => r.response === "in").length} in
+              </div>
+            </div>
+            <Link className="btn" to="/matches">
+              View & RSVP
+            </Link>
+          </div>
+        </div>
+      )}
+
       <div style={{ marginTop: "1.5rem" }}>
         <MeshMatrix
           presence={presence}

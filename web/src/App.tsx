@@ -4,6 +4,7 @@ import { api } from "./api";
 import { Login } from "./pages/Login";
 import { Pending } from "./pages/Pending";
 import { Home } from "./pages/Home";
+import { Matches } from "./pages/Matches";
 import { Admin } from "./pages/Admin";
 
 export function useMe() {
@@ -30,6 +31,7 @@ export function App() {
       <nav>
         <strong>🎮 GameNight</strong>
         <Link to="/">Home</Link>
+        <Link to="/matches">Matches</Link>
         {user.role === "admin" && <Link to="/admin">Admin</Link>}
         <span className="grow" />
         <span className="muted">{user.displayName}</span>
@@ -42,6 +44,7 @@ export function App() {
       </nav>
       <Routes>
         <Route path="/" element={<Home me={user} />} />
+        <Route path="/matches" element={<Matches me={user} />} />
         <Route
           path="/admin"
           element={user.role === "admin" ? <Admin /> : <Navigate to="/" />}

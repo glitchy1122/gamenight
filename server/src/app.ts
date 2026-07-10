@@ -15,6 +15,7 @@ import { registerAuthRoutes } from './modules/auth/routes.js';
 import { registerUserRoutes } from './modules/users/routes.js';
 import { registerDeviceRoutes } from './modules/devices/routes.js';
 import { registerReleaseRoutes } from './modules/releases/routes.js';
+import { registerMatchRoutes } from './modules/matches/routes.js';
 
 export function buildApp(config: Config, db: Db | undefined) {
   const app = Fastify({
@@ -41,6 +42,7 @@ export function buildApp(config: Config, db: Db | undefined) {
   registerUserRoutes(app, db);
   registerDeviceRoutes(app, db);
   registerReleaseRoutes(app, config);
+  registerMatchRoutes(app, db, config);
 
   const publicDir = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
   app.register(fastifyStatic, { root: publicDir });
