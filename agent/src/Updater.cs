@@ -89,8 +89,10 @@ public static class Updater
     /// Check the server for a newer agent, download + verify, and schedule the
     /// binary swap. On <see cref="UpdateOutcome.Updated"/> the caller must exit
     /// the process so the child can replace the exe.
+    /// <paramref name="onProgress"/> receives UI stage text (Checking / Downloading / Installing).
     /// </summary>
-    public static async Task<UpdateResult> CheckAndApplyAsync(string serverUrl, bool silentIfCurrent = true)
+    public static async Task<UpdateResult> CheckAndApplyAsync(
+        string serverUrl, bool silentIfCurrent = true, Action<string>? onProgress = null)
     {
         if (Interlocked.CompareExchange(ref _swapScheduled, 0, 0) == 1)
             return new(UpdateOutcome.Updated, "Update already in progress…");
@@ -100,7 +102,7 @@ public static class Updater
 
         try
         {
-            UpdateResult result = await CheckAndApplyCoreAsync(serverUrl, silentIfCurrent);
+            UpdateResult result = await CheckAndApplyCoreAsync(serverUrl, silentIfCurrent, onProgress);
             if (result.Outcome == UpdateOutcome.Updated)
             {
                 Interlocked.Exchange(ref _swapScheduled, 1);
@@ -116,10 +118,17 @@ public static class Updater
         }
     }
 
-    private static async Task<UpdateResult> CheckAndApplyCoreAsync(string serverUrl, bool silentIfCurrent)
+    private static async Task<UpdateResult> CheckAndApplyCoreAsync(
+        string serverUrl, bool silentIfCurrent, Action<string>? onProgress)
     {
+        void Progress(string msg)
+        {
+            try { onProgress?.Invoke(msg); } catch { /* UI must never kill update */ }
+        }
+
         try
         {
+            Progress("Checking…");
             LatestRelease? latest = await FetchLatestAsync(serverUrl);
             if (latest is null ||
                 string.IsNullOrWhiteSpace(latest.Version) ||
@@ -141,9 +150,15 @@ public static class Updater
             string pending = Path.Combine(UpdateDir, "GameNightAgent.pending.exe");
             Directory.CreateDirectory(UpdateDir);
 
+            string verLabel = FormatVersionLabel(latest.Version);
+            Progress($"Downloading v{verLabel}…");
             Log($"downloading v{latest.Version} from {latest.Url}");
-            await DownloadAsync(latest.Url, pending);
+            await DownloadAsync(latest.Url, pending, pct =>
+                Progress(pct is null
+                    ? $"Downloading v{verLabel}…"
+                    : $"Downloading v{verLabel}… {pct}%"));
 
+            Progress("Verifying…");
             string actual = ComputeSha256Hex(pending);
             string expected = NormalizeSha256(latest.Sha256);
             if (!actual.Equals(expected, StringComparison.OrdinalIgnoreCase))
@@ -157,6 +172,7 @@ public static class Updater
             if (string.IsNullOrEmpty(target))
                 return new(UpdateOutcome.Failed, "Cannot locate running executable path.");
 
+            Progress($"Installing v{verLabel}…");
             // The pending file can't replace itself while running, so copy it to
             // a swap helper. Program.Main handles --apply-update before the mutex.
             string swap = Path.Combine(UpdateDir, "GameNightAgent.swap.exe");
@@ -171,7 +187,7 @@ public static class Updater
             };
             Process.Start(psi);
             Log($"swap scheduled → v{latest.Version}");
-            return new(UpdateOutcome.Updated, $"Updating to v{latest.Version}…", latest.Version);
+            return new(UpdateOutcome.Updated, $"Installing v{verLabel} — restarting…", latest.Version);
         }
         catch (Exception ex)
         {
@@ -179,6 +195,14 @@ public static class Updater
             Log($"check/apply failed: {detail}");
             return new(UpdateOutcome.Failed, $"Update failed: {detail}");
         }
+    }
+
+    private static string FormatVersionLabel(string version)
+    {
+        string v = version.Trim();
+        if (v.StartsWith("agent-", StringComparison.OrdinalIgnoreCase))
+            v = v[6..];
+        return v.TrimStart('v', 'V');
     }
 
     public static async Task<LatestRelease?> FetchLatestAsync(string serverUrl)
@@ -227,7 +251,7 @@ public static class Updater
         return s.ToLowerInvariant();
     }
 
-    private static async Task DownloadAsync(string url, string destPath)
+    private static async Task DownloadAsync(string url, string destPath, Action<int?>? onPercent = null)
     {
         const int maxAttempts = 3;
         Exception? last = null;
@@ -240,9 +264,32 @@ public static class Updater
                 using var req = new HttpRequestMessage(HttpMethod.Get, url);
                 using var resp = await Http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead);
                 resp.EnsureSuccessStatusCode();
-                await using (var input = await resp.Content.ReadAsStreamAsync())
-                await using (var output = new FileStream(tmp, FileMode.CreateNew, FileAccess.Write, FileShare.None))
-                    await input.CopyToAsync(output);
+                long? total = resp.Content.Headers.ContentLength;
+                await using var input = await resp.Content.ReadAsStreamAsync();
+                await using var output = new FileStream(tmp, FileMode.CreateNew, FileAccess.Write, FileShare.None);
+                var buffer = new byte[81920];
+                long copied = 0;
+                int lastPct = -1;
+                int read;
+                while ((read = await input.ReadAsync(buffer)) > 0)
+                {
+                    await output.WriteAsync(buffer.AsMemory(0, read));
+                    copied += read;
+                    if (total is > 0)
+                    {
+                        int pct = (int)(copied * 100 / total.Value);
+                        if (pct != lastPct && (pct == 100 || pct - lastPct >= 5))
+                        {
+                            lastPct = pct;
+                            try { onPercent?.Invoke(pct); } catch { }
+                        }
+                    }
+                    else if (lastPct < 0)
+                    {
+                        lastPct = 0;
+                        try { onPercent?.Invoke(null); } catch { }
+                    }
+                }
 
                 File.Move(tmp, destPath, overwrite: true);
                 return;

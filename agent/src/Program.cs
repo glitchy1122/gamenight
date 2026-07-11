@@ -153,8 +153,10 @@ internal static class Program
     private static async Task RunUpdateCheckAsync(
         string serverUrl, TrayIcon tray, AgentStatusForm status, bool manual)
     {
-        if (manual) status.SetUpdateStatus("Checking…");
-        UpdateResult result = await Updater.CheckAndApplyAsync(serverUrl, silentIfCurrent: !manual);
+        UpdateResult result = await Updater.CheckAndApplyAsync(
+            serverUrl,
+            silentIfCurrent: !manual,
+            onProgress: status.SetUpdateStatus);
         switch (result.Outcome)
         {
             case UpdateOutcome.Updated:
