@@ -1,5 +1,5 @@
-// The agent's entire UI (SDD §12): a tray icon and a few menu items.
-// The real dashboard is the website; the agent stays invisible.
+// The agent's tray UI (SDD §12). Status window is optional visual feedback;
+// the agent still runs headless in the tray when the window is closed.
 namespace GameNight.Agent;
 
 public sealed class TrayIcon : IDisposable
@@ -7,10 +7,12 @@ public sealed class TrayIcon : IDisposable
     private readonly NotifyIcon _icon;
     private readonly ContextMenuStrip _menu;
     private readonly ToolStripMenuItem _status;
+    private readonly ToolStripMenuItem _pause;
     private bool _paused;
     private string _connectionStatus = "starting…";
     public event Action<bool>? PauseToggled;
     public event Action? UpdateCheckRequested;
+    public event Action? OpenStatusRequested;
 
     public TrayIcon(string serverUrl, ServerLink link)
     {
@@ -18,26 +20,22 @@ public sealed class TrayIcon : IDisposable
         _menu = menu;
         _status = new ToolStripMenuItem(StatusLabel()) { Enabled = false };
         var version = new ToolStripMenuItem($"Version {AgentInfo.Version}") { Enabled = false };
-        var pause = new ToolStripMenuItem("Pause monitoring");
+        _pause = new ToolStripMenuItem("Pause monitoring");
         var checkUpdate = new ToolStripMenuItem("Check for updates");
         menu.Items.Add(_status);
         menu.Items.Add(version);
         menu.Items.Add(new ToolStripSeparator());
+        menu.Items.Add("Open status", null, (_, _) => OpenStatusRequested?.Invoke());
         menu.Items.Add("Open dashboard", null, (_, _) =>
             System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(serverUrl) { UseShellExecute = true }));
         menu.Items.Add(checkUpdate);
-        menu.Items.Add(pause);
+        menu.Items.Add(_pause);
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add("Quit", null, (_, _) => Application.Exit());
 
         checkUpdate.Click += (_, _) => UpdateCheckRequested?.Invoke();
 
-        pause.Click += (_, _) =>
-        {
-            _paused = !_paused;
-            pause.Text = _paused ? "Resume monitoring" : "Pause monitoring";
-            PauseToggled?.Invoke(_paused);
-        };
+        _pause.Click += (_, _) => SetPaused(!_paused, raiseEvent: true);
 
         // BeginInvoke needs a native handle; a ContextMenuStrip only creates
         // one when first opened. Force it now, or early status updates throw.
@@ -50,6 +48,7 @@ public sealed class TrayIcon : IDisposable
             Visible = true,
             ContextMenuStrip = menu,
         };
+        _icon.DoubleClick += (_, _) => OpenStatusRequested?.Invoke();
 
         link.StatusChanged += s =>
         {
@@ -64,6 +63,23 @@ public sealed class TrayIcon : IDisposable
             }
             catch { /* UI cosmetics must NEVER kill the connection loop */ }
         };
+    }
+
+    public void SetPaused(bool paused, bool raiseEvent = false)
+    {
+        void Apply()
+        {
+            if (_paused == paused && !raiseEvent) return;
+            _paused = paused;
+            _pause.Text = _paused ? "Resume monitoring" : "Pause monitoring";
+            if (raiseEvent) PauseToggled?.Invoke(_paused);
+        }
+        try
+        {
+            if (_menu.InvokeRequired) _menu.BeginInvoke(Apply);
+            else Apply();
+        }
+        catch { /* tray cosmetics must never crash */ }
     }
 
     private string StatusLabel() => _connectionStatus;

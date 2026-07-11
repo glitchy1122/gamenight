@@ -1,4 +1,4 @@
-// Entry point (SDD §12): single instance, link if needed, tray + detectors.
+// Entry point (SDD §12): single instance, link if needed, tray + status window.
 using System.Diagnostics;
 using System.Net.NetworkInformation;
 using Microsoft.Win32;
@@ -43,13 +43,13 @@ internal static class Program
         using var link = new ServerLink(config.ServerUrl, token);
         using var probes = new ProbeEngine();
         using var tray = new TrayIcon(config.ServerUrl, link);
+        using var status = new AgentStatusForm(config.ServerUrl);
 
         // Phase 3: server sends who to probe → feed the probe engine.
         // Also keep the latest list for diagnostics (peer reachability).
         List<Peer> currentPeers = new();
         link.PeersReceived += peers => { currentPeers = peers; probes.SetPeers(peers); };
         // Phase 4: server sends toast notifications → show a Windows balloon.
-        // Marshal to the UI thread; NotifyIcon must be touched from there.
         link.ToastReceived += (title, body) => tray.ShowToast(title, body);
         // Phase 5: server asks the agent to self-check → run diagnostics, report.
         link.DiagnoseRequested += () => _ = Task.Run(async () =>
@@ -59,32 +59,44 @@ internal static class Program
                 c.Id, c.Label, c.Status.ToString().ToLowerInvariant(), c.Detail, c.Fix));
             link.ReportDiagnostics(dto);
         });
-        // Phase 5: self-update — tray "Check for updates" or background poll.
-        tray.UpdateCheckRequested += () => _ = RunUpdateCheckAsync(config.ServerUrl, tray, manual: true);
+
+        bool paused = false;
+        void SetPaused(bool p)
+        {
+            paused = p;
+            tray.SetPaused(p);
+            status.SetPaused(p);
+            if (p) link.ReportState("idle", RadminDetector.Detect());
+        }
+
+        void RequestUpdate(bool manual) =>
+            _ = RunUpdateCheckAsync(config.ServerUrl, tray, status, manual);
+
+        tray.UpdateCheckRequested += () => RequestUpdate(manual: true);
+        status.UpdateCheckRequested += () => RequestUpdate(manual: true);
+        tray.PauseToggled += SetPaused;
+        status.PauseToggled += SetPaused;
+        tray.OpenStatusRequested += status.ShowOrFocus;
+        link.StatusChanged += s => status.SetConnectionStatus(s);
+
         link.Start();
         probes.Start();
 
         // Detector loop: poll game/adapters every 5s. Timers, never busy loops.
-        bool paused = false;
-        tray.PauseToggled += p => { paused = p; if (p) link.ReportState("idle", RadminDetector.Detect()); };
-
         RadminInfo radmin = RadminDetector.Detect();
         var timer = new System.Windows.Forms.Timer { Interval = 5000 };
         timer.Tick += (_, _) =>
         {
             if (paused) return;
-            radmin = RadminDetector.Detect(); // every 5s — catches Radmin connecting after launch
+            radmin = RadminDetector.Detect();
             string state = GameDetector.IsFarCry2Running() ? "in_game" : "online";
             link.ReportState(state, radmin);
+            status.SetPresence(state, radmin);
         };
 
-        // Metrics timer: every 30s, summarize the probe windows and report.
-        // (Probes themselves run every 10s inside ProbeEngine.)
         var metricsTimer = new System.Windows.Forms.Timer { Interval = 30_000 };
         metricsTimer.Tick += (_, _) => { if (!paused) link.ReportMetrics(probes.Summarize()); };
 
-        // Self-update: first check ~60s after launch (let the link settle), then
-        // every 6 hours. Fail-quiet — never interrupt a match with a dialog.
         var updateTimer = new System.Windows.Forms.Timer { Interval = 60_000 };
         void ScheduleNextUpdateCheck(int ms)
         {
@@ -95,7 +107,7 @@ internal static class Program
         updateTimer.Tick += (_, _) =>
         {
             ScheduleNextUpdateCheck(6 * 60 * 60 * 1000); // 6h
-            _ = RunUpdateCheckAsync(config.ServerUrl, tray, manual: false);
+            RequestUpdate(manual: false);
         };
         updateTimer.Start();
 
@@ -103,31 +115,38 @@ internal static class Program
         timer.Start();
         metricsTimer.Start();
         link.ReportState("online", radmin);
+        status.SetPresence("online", radmin);
+        status.SetUpdateStatus("Idle — checks every 6 hours");
+        status.Show(); // first-run visual feedback; close hides to tray
 
         Application.Run(); // message loop until tray → Quit
     }
 
-    private static async Task RunUpdateCheckAsync(string serverUrl, TrayIcon tray, bool manual)
+    private static async Task RunUpdateCheckAsync(
+        string serverUrl, TrayIcon tray, AgentStatusForm status, bool manual)
     {
+        if (manual) status.SetUpdateStatus("Checking…");
         UpdateResult result = await Updater.CheckAndApplyAsync(serverUrl, silentIfCurrent: !manual);
         switch (result.Outcome)
         {
             case UpdateOutcome.Updated:
+                status.SetUpdateStatus(result.Message);
                 tray.ShowToast("GameNight update", result.Message);
-                // Give the balloon a moment, then exit so the swap child can replace us.
                 await Task.Delay(1500);
                 Application.Exit();
                 break;
             case UpdateOutcome.UpToDate:
+                status.SetUpdateStatus(result.Message);
                 if (manual) tray.ShowToast("GameNight update", result.Message);
                 break;
             case UpdateOutcome.NotConfigured:
+                status.SetUpdateStatus(result.Message);
                 if (manual) tray.ShowToast("GameNight update", result.Message);
                 break;
             case UpdateOutcome.Failed:
-                // Don't overwrite a successful "Updating…" toast with a racing failure.
                 if (result.Message.Contains("already in progress", StringComparison.OrdinalIgnoreCase))
                     break;
+                status.SetUpdateStatus(result.Message);
                 tray.ShowToast("GameNight update", result.Message);
                 break;
             default:
@@ -140,8 +159,6 @@ internal static class Program
 
     private static void RegisterAutostart()
     {
-        // HKCU Run key: per-user autostart, no admin, removable in Task Manager
-        // → Startup apps. A Windows *Service* was rejected in SDD §12.
         try
         {
             using RegistryKey? key = Registry.CurrentUser.OpenSubKey(
