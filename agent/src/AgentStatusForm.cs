@@ -11,6 +11,7 @@ public sealed class AgentStatusForm : Form
     private readonly Label _radminValue = ValueLabel();
     private readonly Label _updateValue = ValueLabel();
     private readonly Label _versionValue = ValueLabel();
+    private readonly Label _logsValue = ValueLabel();
     private readonly Button _pauseBtn = new() { Width = 150, Height = 32, FlatStyle = FlatStyle.System };
     private readonly Button _updateBtn = new() { Text = "Check for updates", Width = 150, Height = 32, FlatStyle = FlatStyle.System };
     private readonly Button _dashboardBtn = new() { Text = "Open dashboard", Width = 150, Height = 32, FlatStyle = FlatStyle.System };
@@ -38,7 +39,7 @@ public sealed class AgentStatusForm : Form
         MaximizeBox = false;
         MinimizeBox = true;
         StartPosition = FormStartPosition.CenterScreen;
-        ClientSize = new Size(440, 400);
+        ClientSize = new Size(440, 430);
         BackColor = Color.FromArgb(245, 246, 248);
         Font = new Font("Segoe UI", 9f);
         ShowInTaskbar = true;
@@ -93,8 +94,10 @@ public sealed class AgentStatusForm : Form
         AddRow(grid, 2, "Presence", _presenceValue);
         AddRow(grid, 3, "Radmin", _radminValue);
         AddRow(grid, 4, "Updates", _updateValue);
-        AddRow(grid, 5, "Version", _versionValue);
+        AddRow(grid, 5, "Logs", _logsValue);
+        AddRow(grid, 6, "Version", _versionValue);
         _versionValue.Text = $"v{AgentInfo.Version}";
+        _logsValue.Text = "—";
 
         var actions = new FlowLayoutPanel
         {
@@ -198,6 +201,12 @@ public sealed class AgentStatusForm : Form
     {
         if (InvokeRequired) { BeginInvoke(() => SetUpdateStatus(text)); return; }
         _updateValue.Text = text;
+    }
+
+    public void SetLogStatus(string text)
+    {
+        if (InvokeRequired) { BeginInvoke(() => SetLogStatus(text)); return; }
+        _logsValue.Text = text;
     }
 
     private void RefreshMonitoringLabel()

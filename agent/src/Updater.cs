@@ -341,14 +341,7 @@ public static class Updater
 
     private static void Log(string msg)
     {
-        try
-        {
-            Directory.CreateDirectory(AgentConfig.DataDir);
-            File.AppendAllText(
-                Path.Combine(AgentConfig.DataDir, "update.log"),
-                $"{DateTime.Now:yyyy-MM-dd HH:mm:ss} {msg}\r\n");
-        }
-        catch { /* never crash on logging */ }
+        AgentLog.Write("update.log", msg);
         Debug.WriteLine($"[Updater] {msg}");
     }
 }

@@ -53,16 +53,7 @@ public sealed class ServerLink : IDisposable
         _ = SendAsync(StateMsg.Create(state, radmin));
     }
 
-    private static void Log(string msg)
-    {
-        try
-        {
-            var dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "GameNight");
-            Directory.CreateDirectory(dir);
-            File.AppendAllText(Path.Combine(dir, "link.log"), $"{DateTime.Now:HH:mm:ss} {msg}\r\n");
-        }
-        catch { }
-    }
+    private static void Log(string msg) => AgentLog.Write("link.log", msg);
 
     private async Task RunAsync(CancellationToken ct)
     {

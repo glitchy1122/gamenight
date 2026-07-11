@@ -119,7 +119,35 @@ internal static class Program
         status.SetUpdateStatus("Idle — checks every 6 hours");
         status.Show(); // first-run visual feedback; close hides to tray
 
+        // Housekeeping: trim logs older than 24h on launch, then once a day.
+        _ = Task.Run(() =>
+        {
+            Housekeeping.Run();
+            status.SetLogStatus(SummarizeLogDisk());
+        });
+        var houseTimer = new System.Windows.Forms.Timer { Interval = 24 * 60 * 60 * 1000 };
+        houseTimer.Tick += (_, _) => _ = Task.Run(() =>
+        {
+            Housekeeping.Run();
+            status.SetLogStatus(SummarizeLogDisk());
+        });
+        houseTimer.Start();
+
         Application.Run(); // message loop until tray → Quit
+    }
+
+    private static string SummarizeLogDisk()
+    {
+        try
+        {
+            long total = 0;
+            foreach (string path in Directory.EnumerateFiles(AgentConfig.DataDir, "*.log"))
+                total += new FileInfo(path).Length;
+            if (total < 1024) return $"{total} B (keep 24h)";
+            if (total < 1024 * 1024) return $"{total / 1024.0:0.#} KB (keep 24h)";
+            return $"{total / (1024.0 * 1024.0):0.##} MB (keep 24h)";
+        }
+        catch { return "—"; }
     }
 
     private static async Task RunUpdateCheckAsync(
