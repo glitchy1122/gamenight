@@ -91,8 +91,7 @@ public sealed class TrayIcon : IDisposable
         return tip[..Math.Min(63, tip.Length)];
     }
 
-    /// <summary>Show a native Windows toast (balloon tip). Phase 4.</summary>
-    /// Safe to call from any thread — marshals to the UI thread via the menu.
+    // Balloon tip; marshals onto the UI thread.
     public void ShowToast(string title, string body)
     {
         void Show()

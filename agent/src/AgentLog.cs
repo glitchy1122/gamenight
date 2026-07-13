@@ -1,5 +1,4 @@
-// Shared append-only logging under %LOCALAPPDATA%\GameNight.
-// Full timestamps so Housekeeping can drop lines older than 24 hours.
+// Append-only logs under %LOCALAPPDATA%\GameNight (dated lines for housekeeping).
 namespace GameNight.Agent;
 
 public static class AgentLog

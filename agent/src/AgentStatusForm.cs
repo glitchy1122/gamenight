@@ -1,7 +1,6 @@
 // Simple agent status window. Tray stays primary; this is visual feedback for
 // connection, monitoring, and updates. ContentHost is Dock=Fill so a future
 // WebView2 can embed the web dashboard without rewriting the outer shell.
-// v0.7.5: dark theme (also a visible self-update canary after the 0.7.4 fix).
 namespace GameNight.Agent;
 
 public sealed class AgentStatusForm : Form
@@ -34,10 +33,7 @@ public sealed class AgentStatusForm : Form
     public event Action<bool>? PauseToggled;
     public event Action? UpdateCheckRequested;
 
-    /// <summary>
-    /// Reserved fill area — today holds the status grid; later can host WebView2
-    /// pointed at the GameNight web app without changing the outer shell.
-    /// </summary>
+    // Reserved for a future WebView2 dashboard host.
     public Panel ContentHost { get; }
 
     public AgentStatusForm(string serverUrl)
@@ -82,7 +78,7 @@ public sealed class AgentStatusForm : Form
         });
         header.Controls.Add(new Label
         {
-            Text = "Agent status · dark",
+            Text = "Agent status",
             ForeColor = TextMuted,
             AutoSize = true,
             Location = new Point(68, 40),

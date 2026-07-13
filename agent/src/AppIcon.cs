@@ -1,4 +1,4 @@
-// Brand icon from embedded ico/icon.ico — used by tray, windows, and the exe.
+// Brand icon from embedded ico/icon.ico — tray, windows, and exe.
 using System.Reflection;
 
 namespace GameNight.Agent;
@@ -8,10 +8,7 @@ public static class AppIcon
     private static Icon? _app;
     private static Icon? _tray;
 
-    /// <summary>Window / taskbar icon (32px preferred).</summary>
     public static Icon ForWindow => _app ??= Load(32);
-
-    /// <summary>NotifyIcon tray glyph (16px preferred).</summary>
     public static Icon ForTray => _tray ??= Load(16);
 
     private static Icon Load(int size)

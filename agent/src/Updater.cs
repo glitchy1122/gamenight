@@ -1,9 +1,7 @@
 // Agent self-update (Phase 5): poll GET /api/v1/agent/latest, download the
 // GitHub Release asset, verify SHA-256, then two-process binary-swap.
-//
-// Why two processes: Windows locks the running exe. We spawn the *new* binary
-// with --apply-update, exit (releasing the lock + single-instance mutex), and
-// the child waits for our PID, replaces us in place, and relaunches.
+// Windows locks the running exe, so a child (--apply-update) waits for our
+// PID, replaces the file, and relaunches.
 using System.Diagnostics;
 using System.Net.Http.Json;
 using System.Security.Cryptography;
@@ -34,13 +32,8 @@ public static class Updater
         Path.Combine(AgentConfig.DataDir, "update");
 
     private static readonly HttpClient Http = CreateHttp();
-
-    // Manual "Check for updates" can overlap the background timer; serialize.
     private static readonly SemaphoreSlim Gate = new(1, 1);
-
-    // After a swap is scheduled we are exiting — ignore further checks so a
-    // racing poll cannot toast a misleading SSL/network failure over success.
-    private static int _swapScheduled;
+    private static int _swapScheduled; // 1 after swap is scheduled; hold gate until exit
 
     private static HttpClient CreateHttp()
     {
@@ -51,23 +44,16 @@ public static class Updater
             ConnectTimeout = TimeSpan.FromSeconds(30),
         };
         var http = new HttpClient(handler) { Timeout = TimeSpan.FromMinutes(10) };
-        // GitHub (and some CDNs) are happier with an explicit UA on large downloads.
         http.DefaultRequestHeaders.UserAgent.ParseAdd($"GameNightAgent/{AgentInfo.Version}");
         return http;
     }
 
-    /// <summary>
-    /// Child-process entry: wait for <paramref name="parentPid"/> to exit,
-    /// move <paramref name="pendingPath"/> over <paramref name="targetPath"/>,
-    /// relaunch the agent. Must run BEFORE the single-instance mutex.
-    /// </summary>
     public static int ApplyUpdate(string pendingPath, string targetPath, int parentPid)
     {
         try
         {
             WaitForProcessExit(parentPid, TimeSpan.FromSeconds(60));
-            // Extra beat for Windows to release the file lock after process exit.
-            Thread.Sleep(500);
+            Thread.Sleep(500); // let Windows release the exe lock
 
             if (!ReplaceWithRetry(pendingPath, targetPath, attempts: 20, delayMs: 500))
             {
@@ -85,16 +71,10 @@ public static class Updater
         }
     }
 
-    /// <summary>
-    /// Check the server for a newer agent, download + verify, and schedule the
-    /// binary swap. On <see cref="UpdateOutcome.Updated"/> the caller must exit
-    /// the process so the child can replace the exe.
-    /// <paramref name="onProgress"/> receives UI stage text (Checking / Downloading / Installing).
-    /// </summary>
     public static async Task<UpdateResult> CheckAndApplyAsync(
         string serverUrl, bool silentIfCurrent = true, Action<string>? onProgress = null)
     {
-        if (Interlocked.CompareExchange(ref _swapScheduled, 0, 0) == 1)
+        if (Volatile.Read(ref _swapScheduled) == 1)
             return new(UpdateOutcome.Updated, "Update already in progress…");
 
         if (!await Gate.WaitAsync(0))
@@ -105,15 +85,14 @@ public static class Updater
             UpdateResult result = await CheckAndApplyCoreAsync(serverUrl, silentIfCurrent, onProgress);
             if (result.Outcome == UpdateOutcome.Updated)
             {
-                Interlocked.Exchange(ref _swapScheduled, 1);
-                // Keep the gate held until process exit so nothing else can start.
-                return result;
+                Volatile.Write(ref _swapScheduled, 1);
+                return result; // keep gate held until process exit
             }
             return result;
         }
         finally
         {
-            if (Interlocked.CompareExchange(ref _swapScheduled, 0, 0) == 0)
+            if (Volatile.Read(ref _swapScheduled) == 0)
                 Gate.Release();
         }
     }
@@ -151,7 +130,6 @@ public static class Updater
             Directory.CreateDirectory(UpdateDir);
 
             string verLabel = FormatVersionLabel(latest.Version);
-            Progress($"Downloading v{verLabel}…");
             Log($"downloading v{latest.Version} from {latest.Url}");
             await DownloadAsync(latest.Url, pending, Progress, verLabel);
 
@@ -170,8 +148,6 @@ public static class Updater
                 return new(UpdateOutcome.Failed, "Cannot locate running executable path.");
 
             Progress($"Installing v{verLabel}…");
-            // Unique swap name so a leftover locked GameNightAgent.swap.exe from a
-            // previous attempt cannot block File.Copy.
             string swap = Path.Combine(UpdateDir, $"GameNightAgent.swap-{Guid.NewGuid():N}.exe");
             File.Copy(pending, swap, overwrite: true);
 
@@ -212,16 +188,11 @@ public static class Updater
         return await resp.Content.ReadFromJsonAsync<LatestRelease>();
     }
 
-    /// <summary>Compare dotted semver-ish strings. Returns &gt;0 if a &gt; b.</summary>
     public static int CompareSemVer(string a, string b)
     {
         static int[] Parts(string raw)
         {
-            string v = raw.Trim();
-            // Accept "0.6.1", "v0.6.1", or "agent-v0.6.1" (how some releases were tagged).
-            if (v.StartsWith("agent-", StringComparison.OrdinalIgnoreCase))
-                v = v[6..];
-            v = v.TrimStart('v', 'V');
+            string v = FormatVersionLabel(raw);
             return v.Split('.', StringSplitOptions.RemoveEmptyEntries)
                 .Select(p => int.TryParse(new string(p.TakeWhile(char.IsDigit).ToArray()), out int n) ? n : 0)
                 .ToArray();
@@ -238,7 +209,6 @@ public static class Updater
         return 0;
     }
 
-    /// <summary>Accept bare hex or GitHub-style "sha256:abc…".</summary>
     public static string NormalizeSha256(string sha)
     {
         string s = sha.Trim();
@@ -248,16 +218,10 @@ public static class Updater
         return s.ToLowerInvariant();
     }
 
-    /// <summary>
-    /// One continuous download into a single <c>.partial</c> file, then rename.
-    /// Byte buffering is normal HTTP streaming — not multiple downloads.
-    /// Only a labeled retry (network failure) restarts from 0%.
-    /// </summary>
     private static async Task DownloadAsync(
         string url, string destPath, Action<string> onProgress, string verLabel)
     {
         const int maxAttempts = 3;
-        // Stable name so Explorer shows one file growing, not GUID "chunks".
         string tmp = destPath + ".partial";
         Exception? last = null;
 
@@ -265,10 +229,9 @@ public static class Updater
         {
             try
             {
-                if (attempt > 1)
-                    onProgress($"Retrying download ({attempt}/{maxAttempts})…");
-                else
-                    onProgress($"Downloading v{verLabel}…");
+                onProgress(attempt > 1
+                    ? $"Retrying download ({attempt}/{maxAttempts})…"
+                    : $"Downloading v{verLabel}…");
 
                 TryDelete(tmp);
                 TryDelete(destPath);
@@ -278,7 +241,7 @@ public static class Updater
                 resp.EnsureSuccessStatusCode();
                 long? total = resp.Content.Headers.ContentLength;
 
-                // Dispose streams BEFORE rename — Windows locks files with open writers.
+                // Close writers before rename — Windows won't Move an open file.
                 {
                     await using var input = await resp.Content.ReadAsStreamAsync();
                     await using var output = new FileStream(
@@ -291,14 +254,12 @@ public static class Updater
                     {
                         await output.WriteAsync(buffer.AsMemory(0, read));
                         copied += read;
-                        if (total is > 0)
+                        if (total is not > 0) continue;
+                        int pct = (int)Math.Min(100, copied * 100 / total.Value);
+                        if (pct != lastPct && (pct == 100 || pct - lastPct >= 2 || lastPct < 0))
                         {
-                            int pct = (int)Math.Min(100, copied * 100 / total.Value);
-                            if (pct != lastPct && (pct == 100 || pct - lastPct >= 2 || lastPct < 0))
-                            {
-                                lastPct = pct;
-                                onProgress($"Downloading v{verLabel}… {pct}%");
-                            }
+                            lastPct = pct;
+                            onProgress($"Downloading v{verLabel}… {pct}%");
                         }
                     }
                     await output.FlushAsync();
@@ -324,7 +285,6 @@ public static class Updater
         throw last ?? new InvalidOperationException("download failed");
     }
 
-    /// <summary>Move/replace with short retries for AV scanners; does not re-download.</summary>
     private static async Task ReplaceFileWithRetryAsync(string source, string dest)
     {
         for (int i = 0; i < 10; i++)
@@ -344,7 +304,6 @@ public static class Updater
                 await Task.Delay(200 * (i + 1));
             }
         }
-        // Last resort: copy then delete source.
         File.Copy(source, dest, overwrite: true);
         TryDelete(source);
     }
@@ -368,7 +327,6 @@ public static class Updater
         for (Exception? e = ex; e != null; e = e.InnerException)
             parts.Add(e.Message);
         string joined = string.Join(" → ", parts);
-        // Balloon tips truncate; keep the toast readable.
         return joined.Length <= 180 ? joined : joined[..177] + "…";
     }
 
@@ -390,7 +348,7 @@ public static class Updater
         }
         catch (ArgumentException)
         {
-            // Already gone — fine.
+            // Already gone.
         }
     }
 
@@ -400,7 +358,6 @@ public static class Updater
         {
             try
             {
-                // Prefer atomic replace when dest exists; fall back to move.
                 if (File.Exists(dest))
                     File.Replace(source, dest, destinationBackupFileName: null);
                 else

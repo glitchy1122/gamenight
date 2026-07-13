@@ -1,13 +1,11 @@
 // Log + update-artifact cleanup (Phase 5 housekeeping).
-// Keeps only the last 24 hours of *.log lines under DataDir, and deletes stale
-// download partials so a friend's disk doesn't fill up over a long campaign.
+// Keeps the last 24 hours of *.log lines and drops stale download partials.
 namespace GameNight.Agent;
 
 public static class Housekeeping
 {
     public static readonly TimeSpan Retention = TimeSpan.FromHours(24);
 
-    /// <summary>Trim logs and stale update files. Safe to call from any thread.</summary>
     public static string Run()
     {
         try
@@ -31,8 +29,6 @@ public static class Housekeeping
                 foreach (string path in Directory.EnumerateFiles(updateDir))
                 {
                     string name = Path.GetFileName(path);
-                    // Never touch the live swap helper if an update is mid-flight;
-                    // only clear abandoned partials / pending downloads.
                     bool staleName = name.Contains(".partial", StringComparison.OrdinalIgnoreCase)
                         || name.EndsWith(".pending.exe", StringComparison.OrdinalIgnoreCase);
                     if (!staleName) continue;
@@ -79,12 +75,11 @@ public static class Housekeeping
             }
             else
             {
-                // Legacy HH:mm:ss-only lines (no date) — age unknown; drop them.
+                // Legacy HH:mm:ss-only lines — age unknown; drop.
                 dropped++;
             }
         }
 
-        // Avoid rewriting when nothing changed.
         if (dropped == 0 && keptLines.Count == lines.Length)
             return (keptLines.Count, 0, 0);
 
@@ -102,15 +97,12 @@ public static class Housekeeping
         }
 
         long after = File.Exists(path) ? new FileInfo(path).Length : 0;
-        long freed = Math.Max(0, before - after);
-        return (keptLines.Count, dropped, freed);
+        return (keptLines.Count, dropped, Math.Max(0, before - after));
     }
 
-    /// <summary>Accepts "yyyy-MM-dd HH:mm:ss …" at the start of a log line.</summary>
     public static bool TryParseLogTimestamp(string line, out DateTime timestamp)
     {
         timestamp = default;
-        // "yyyy-MM-dd HH:mm:ss" is 19 chars.
         if (line.Length < 19) return false;
         return DateTime.TryParseExact(
             line.AsSpan(0, 19),

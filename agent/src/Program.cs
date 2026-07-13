@@ -174,8 +174,6 @@ internal static class Program
                 if (manual) tray.ShowToast("GameNight update", result.Message);
                 break;
             case UpdateOutcome.Failed:
-                if (result.Message.Contains("already in progress", StringComparison.OrdinalIgnoreCase))
-                    break;
                 status.SetUpdateStatus(result.Message);
                 tray.ShowToast("GameNight update", result.Message);
                 break;
