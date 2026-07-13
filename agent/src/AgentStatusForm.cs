@@ -1,10 +1,20 @@
 // Simple agent status window. Tray stays primary; this is visual feedback for
 // connection, monitoring, and updates. ContentHost is Dock=Fill so a future
 // WebView2 can embed the web dashboard without rewriting the outer shell.
+// v0.7.5: dark theme (also a visible self-update canary after the 0.7.4 fix).
 namespace GameNight.Agent;
 
 public sealed class AgentStatusForm : Form
 {
+    private static readonly Color Bg = Color.FromArgb(22, 24, 28);
+    private static readonly Color Surface = Color.FromArgb(32, 36, 42);
+    private static readonly Color HeaderBg = Color.FromArgb(16, 18, 22);
+    private static readonly Color TextMuted = Color.FromArgb(140, 148, 160);
+    private static readonly Color TextPrimary = Color.FromArgb(232, 236, 240);
+    private static readonly Color Ok = Color.FromArgb(62, 196, 120);
+    private static readonly Color Warn = Color.FromArgb(230, 170, 70);
+    private static readonly Color Bad = Color.FromArgb(220, 90, 90);
+
     private readonly Label _connectionValue = ValueLabel();
     private readonly Label _monitoringValue = ValueLabel();
     private readonly Label _presenceValue = ValueLabel();
@@ -12,9 +22,9 @@ public sealed class AgentStatusForm : Form
     private readonly Label _updateValue = ValueLabel();
     private readonly Label _versionValue = ValueLabel();
     private readonly Label _logsValue = ValueLabel();
-    private readonly Button _pauseBtn = new() { Width = 150, Height = 32, FlatStyle = FlatStyle.System };
-    private readonly Button _updateBtn = new() { Text = "Check for updates", Width = 150, Height = 32, FlatStyle = FlatStyle.System };
-    private readonly Button _dashboardBtn = new() { Text = "Open dashboard", Width = 150, Height = 32, FlatStyle = FlatStyle.System };
+    private readonly Button _pauseBtn = ActionButton("Pause monitoring");
+    private readonly Button _updateBtn = ActionButton("Check for updates");
+    private readonly Button _dashboardBtn = ActionButton("Open dashboard");
 
     private readonly string _serverUrl;
     private bool _paused;
@@ -40,8 +50,9 @@ public sealed class AgentStatusForm : Form
         MaximizeBox = false;
         MinimizeBox = true;
         StartPosition = FormStartPosition.CenterScreen;
-        ClientSize = new Size(440, 430);
-        BackColor = Color.FromArgb(245, 246, 248);
+        ClientSize = new Size(440, 440);
+        BackColor = Bg;
+        ForeColor = TextPrimary;
         Font = new Font("Segoe UI", 9f);
         ShowInTaskbar = true;
 
@@ -49,7 +60,7 @@ public sealed class AgentStatusForm : Form
         {
             Dock = DockStyle.Top,
             Height = 72,
-            BackColor = Color.FromArgb(28, 32, 38),
+            BackColor = HeaderBg,
         };
         var brand = new PictureBox
         {
@@ -57,6 +68,7 @@ public sealed class AgentStatusForm : Form
             SizeMode = PictureBoxSizeMode.Zoom,
             Size = new Size(40, 40),
             Location = new Point(16, 16),
+            BackColor = Color.Transparent,
         };
         header.Controls.Add(brand);
         header.Controls.Add(new Label
@@ -66,20 +78,22 @@ public sealed class AgentStatusForm : Form
             Font = new Font("Segoe UI Semibold", 14f),
             AutoSize = true,
             Location = new Point(66, 14),
+            BackColor = Color.Transparent,
         });
         header.Controls.Add(new Label
         {
-            Text = "Agent status",
-            ForeColor = Color.FromArgb(180, 188, 198),
+            Text = "Agent status · dark",
+            ForeColor = TextMuted,
             AutoSize = true,
             Location = new Point(68, 40),
+            BackColor = Color.Transparent,
         });
 
         ContentHost = new Panel
         {
             Dock = DockStyle.Fill,
             Padding = new Padding(16),
-            BackColor = Color.FromArgb(245, 246, 248),
+            BackColor = Bg,
         };
 
         var body = new FlowLayoutPanel
@@ -88,13 +102,22 @@ public sealed class AgentStatusForm : Form
             FlowDirection = FlowDirection.TopDown,
             WrapContents = false,
             AutoScroll = true,
+            BackColor = Bg,
         };
 
+        var card = new Panel
+        {
+            Width = 400,
+            Height = 230,
+            BackColor = Surface,
+            Padding = new Padding(12),
+        };
         var grid = new TableLayoutPanel
         {
-            AutoSize = true,
+            Dock = DockStyle.Fill,
+            AutoSize = false,
             ColumnCount = 2,
-            Width = 400,
+            BackColor = Surface,
         };
         grid.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 120));
         grid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
@@ -107,6 +130,7 @@ public sealed class AgentStatusForm : Form
         AddRow(grid, 6, "Version", _versionValue);
         _versionValue.Text = $"v{AgentInfo.Version}";
         _logsValue.Text = "—";
+        card.Controls.Add(grid);
 
         var actions = new FlowLayoutPanel
         {
@@ -115,6 +139,7 @@ public sealed class AgentStatusForm : Form
             WrapContents = true,
             Width = 400,
             Padding = new Padding(0, 12, 0, 0),
+            BackColor = Bg,
         };
         actions.Controls.Add(_pauseBtn);
         actions.Controls.Add(_updateBtn);
@@ -124,12 +149,13 @@ public sealed class AgentStatusForm : Form
         {
             AutoSize = true,
             MaximumSize = new Size(400, 0),
-            ForeColor = Color.FromArgb(100, 108, 118),
+            ForeColor = TextMuted,
+            BackColor = Color.Transparent,
             Padding = new Padding(0, 16, 0, 0),
             Text = "Closing this window keeps the agent running in the tray.",
         };
 
-        body.Controls.Add(grid);
+        body.Controls.Add(card);
         body.Controls.Add(actions);
         body.Controls.Add(hint);
         ContentHost.Controls.Add(body);
@@ -229,17 +255,13 @@ public sealed class AgentStatusForm : Form
     {
         bool connected = _connection.Contains("connected", StringComparison.OrdinalIgnoreCase)
             && !_connection.Contains("reconnecting", StringComparison.OrdinalIgnoreCase);
-        _connectionValue.ForeColor = connected
-            ? Color.FromArgb(22, 128, 72)
-            : Color.FromArgb(180, 100, 20);
-
-        _monitoringValue.ForeColor = _paused
-            ? Color.FromArgb(160, 100, 20)
-            : Color.FromArgb(22, 128, 72);
-
-        _radminValue.ForeColor = _radmin.StartsWith("Connected", StringComparison.Ordinal)
-            ? Color.FromArgb(22, 128, 72)
-            : Color.FromArgb(160, 60, 50);
+        _connectionValue.ForeColor = connected ? Ok : Warn;
+        _monitoringValue.ForeColor = _paused ? Warn : Ok;
+        _radminValue.ForeColor = _radmin.StartsWith("Connected", StringComparison.Ordinal) ? Ok : Bad;
+        _presenceValue.ForeColor = TextPrimary;
+        _updateValue.ForeColor = TextPrimary;
+        _logsValue.ForeColor = TextPrimary;
+        _versionValue.ForeColor = TextPrimary;
     }
 
     private static void AddRow(TableLayoutPanel grid, int row, string key, Label value)
@@ -250,7 +272,8 @@ public sealed class AgentStatusForm : Form
         {
             Text = key,
             AutoSize = true,
-            ForeColor = Color.FromArgb(90, 96, 106),
+            ForeColor = TextMuted,
+            BackColor = Color.Transparent,
             Margin = new Padding(0, 6, 8, 6),
             Anchor = AnchorStyles.Left,
         };
@@ -264,7 +287,19 @@ public sealed class AgentStatusForm : Form
         Text = "—",
         AutoSize = true,
         Font = new Font("Segoe UI Semibold", 9.5f),
-        ForeColor = Color.FromArgb(28, 32, 38),
+        ForeColor = TextPrimary,
+        BackColor = Color.Transparent,
         Anchor = AnchorStyles.Left,
+    };
+
+    private static Button ActionButton(string text) => new()
+    {
+        Text = text,
+        Width = 150,
+        Height = 32,
+        FlatStyle = FlatStyle.Flat,
+        BackColor = Color.FromArgb(48, 54, 64),
+        ForeColor = TextPrimary,
+        FlatAppearance = { BorderColor = Color.FromArgb(70, 78, 90), BorderSize = 1 },
     };
 }

@@ -6,7 +6,7 @@ namespace GameNight.Agent;
 
 public static class AgentInfo
 {
-    public const string Version = "0.7.4";
+    public const string Version = "0.7.5";
 }
 
 // ---- agent → server ----

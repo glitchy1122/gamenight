@@ -6,10 +6,22 @@ namespace GameNight.Agent;
 
 public sealed class LinkForm : Form
 {
+    private static readonly Color Bg = Color.FromArgb(22, 24, 28);
+    private static readonly Color TextPrimary = Color.FromArgb(232, 236, 240);
+    private static readonly Color TextMuted = Color.FromArgb(140, 148, 160);
+
     private readonly TextBox _url = new() { Width = 320 };
     private readonly TextBox _code = new() { Width = 320, CharacterCasing = CharacterCasing.Upper };
-    private readonly Button _ok = new() { Text = "Link this PC", Width = 320, Height = 34 };
-    private readonly Label _status = new() { Width = 320, Height = 40, ForeColor = Color.IndianRed };
+    private readonly Button _ok = new()
+    {
+        Text = "Link this PC",
+        Width = 320,
+        Height = 34,
+        FlatStyle = FlatStyle.Flat,
+        BackColor = Color.FromArgb(48, 54, 64),
+        ForeColor = TextPrimary,
+    };
+    private readonly Label _status = new() { Width = 320, Height = 40, ForeColor = Color.FromArgb(220, 90, 90) };
 
     public string? Token { get; private set; }
     public string ServerUrl => _url.Text.TrimEnd('/');
@@ -22,12 +34,25 @@ public sealed class LinkForm : Form
         MaximizeBox = false; MinimizeBox = false;
         ClientSize = new Size(360, 220);
         StartPosition = FormStartPosition.CenterScreen;
+        BackColor = Bg;
+        ForeColor = TextPrimary;
+        Font = new Font("Segoe UI", 9f);
+
+        _ok.FlatAppearance.BorderColor = Color.FromArgb(70, 78, 90);
+        StyleBox(_url);
+        StyleBox(_code);
 
         _url.Text = defaultUrl;
-        var flow = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.TopDown, Padding = new Padding(16) };
-        flow.Controls.Add(new Label { Text = "Server URL", Width = 320 });
+        var flow = new FlowLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            FlowDirection = FlowDirection.TopDown,
+            Padding = new Padding(16),
+            BackColor = Bg,
+        };
+        flow.Controls.Add(MutedLabel("Server URL"));
         flow.Controls.Add(_url);
-        flow.Controls.Add(new Label { Text = "Link code (from the website → Home → Link your PC)", Width = 320 });
+        flow.Controls.Add(MutedLabel("Link code (from the website → Home → Link your PC)"));
         flow.Controls.Add(_code);
         flow.Controls.Add(_ok);
         flow.Controls.Add(_status);
@@ -35,6 +60,21 @@ public sealed class LinkForm : Form
 
         _ok.Click += async (_, _) => await ClaimAsync();
     }
+
+    private static void StyleBox(TextBox box)
+    {
+        box.BackColor = Color.FromArgb(32, 36, 42);
+        box.ForeColor = TextPrimary;
+        box.BorderStyle = BorderStyle.FixedSingle;
+    }
+
+    private static Label MutedLabel(string text) => new()
+    {
+        Text = text,
+        Width = 320,
+        ForeColor = TextMuted,
+        BackColor = Color.Transparent,
+    };
 
     private async Task ClaimAsync()
     {
