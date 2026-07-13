@@ -20,16 +20,7 @@ public static class GameDetector
 
 public static class RadminDetector
 {
-    private static void Log(string msg)
-    {
-        try
-        {
-            var dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "GameNight");
-            Directory.CreateDirectory(dir);
-            File.AppendAllText(Path.Combine(dir, "detect.log"), $"{DateTime.Now:HH:mm:ss} {msg}\r\n");
-        }
-        catch { }
-    }
+    private static void Log(string msg) => AgentLog.Write("detect.log", msg);
 
     /// <summary>
     /// The DEFINITIVE signal is a live IPv4 in 26.0.0.0/8 - if Windows assigned

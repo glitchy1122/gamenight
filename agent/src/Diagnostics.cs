@@ -13,7 +13,7 @@ public record CheckResult(string Id, string Label, CheckStatus Status, string De
 
 public static class Diagnostics
 {
-    public static async Task<List<CheckResult>> RunAsync(IEnumerable<Peer> peers)
+    public static async Task<List<CheckResult>> RunAsync(IEnumerable<Peer> peers, string? serverUrl = null)
     {
         var results = new List<CheckResult>();
 
@@ -63,8 +63,33 @@ public static class Diagnostics
                 "Couldn't auto-detect Far Cry 2 (best-effort check).",
                 "If the game runs, ignore this. Otherwise install from the group package on the Setup page."));
 
-        results.Add(new("agent", "Agent version", CheckStatus.Pass, $"Running v{AgentInfo.Version}", null));
+        results.Add(await AgentVersionCheckAsync(serverUrl));
         return results;
+    }
+
+    private static async Task<CheckResult> AgentVersionCheckAsync(string? serverUrl)
+    {
+        if (string.IsNullOrWhiteSpace(serverUrl))
+            return new("agent", "Agent version", CheckStatus.Pass, $"Running v{AgentInfo.Version}", null);
+
+        try
+        {
+            LatestRelease? latest = await Updater.FetchLatestAsync(serverUrl);
+            if (latest?.Version is null)
+                return new("agent", "Agent version", CheckStatus.Pass, $"Running v{AgentInfo.Version}", null);
+
+            if (Updater.CompareSemVer(latest.Version, AgentInfo.Version) > 0)
+                return new("agent", "Agent version", CheckStatus.Warn,
+                    $"Running v{AgentInfo.Version}; latest is v{latest.Version}.",
+                    "The agent will auto-update shortly, or right-click the tray icon → Check for updates.");
+
+            return new("agent", "Agent version", CheckStatus.Pass,
+                $"Running v{AgentInfo.Version} (up to date).", null);
+        }
+        catch
+        {
+            return new("agent", "Agent version", CheckStatus.Pass, $"Running v{AgentInfo.Version}", null);
+        }
     }
 
     private static bool RadminAdapterExists()

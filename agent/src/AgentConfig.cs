@@ -13,9 +13,10 @@ public sealed class AgentConfig
     public string ServerUrl { get; set; } = "https://gamenight-xbgu.onrender.com"; // overwritten at link time
     public string? TokenProtected { get; set; } // base64(DPAPI(token))
 
-    private static readonly string Dir =
+    /// <summary>%LOCALAPPDATA%\GameNight — config, logs, pending updates.</summary>
+    public static readonly string DataDir =
         Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "GameNight");
-    private static readonly string FilePath = Path.Combine(Dir, "config.json");
+    private static readonly string FilePath = Path.Combine(DataDir, "config.json");
 
     public static AgentConfig Load()
     {
@@ -30,7 +31,7 @@ public sealed class AgentConfig
 
     public void Save()
     {
-        Directory.CreateDirectory(Dir);
+        Directory.CreateDirectory(DataDir);
         File.WriteAllText(FilePath, JsonSerializer.Serialize(this, new JsonSerializerOptions { WriteIndented = true }));
     }
 

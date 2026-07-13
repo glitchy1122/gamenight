@@ -63,7 +63,7 @@ and update the AGENT_* env vars, so friends get the diagnostics-capable build.
 - [ ] No-agent case shows "start your agent"
 
 ## What's left in Phase 5
-- **Agent self-update** (the two-process binary-swap) — its own focused chunk.
+- ~~**Agent self-update** (the two-process binary-swap)~~ — done; see ADR-0009.
 - **Onboard all ~20 friends** — you + community over the coming weeks.
-- Housekeeping: remove the old debug logs (detect.log/link.log) from the agent,
+- Housekeeping: ~~remove/trim agent debug logs~~ (24h retention in v0.7.1),
   a quick `npm audit` review, tray-icon polish.

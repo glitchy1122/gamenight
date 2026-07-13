@@ -1,5 +1,24 @@
 # Runbook
 
+## Publish a new agent build
+1. Bump `<Version>` in `agent/GameNight.Agent.csproj` **and** `AgentInfo.Version` in `agent/src/Dto.cs` (keep them identical).
+2. Build:
+   ```powershell
+   cd agent
+   dotnet publish -c Release
+   ```
+   Output: `agent\bin\Release\net8.0-windows\win-x64\publish\GameNightAgent.exe`
+3. SHA-256 (PowerShell):
+   ```powershell
+   (Get-FileHash .\bin\Release\net8.0-windows\win-x64\publish\GameNightAgent.exe -Algorithm SHA256).Hash.ToLower()
+   ```
+4. Create a GitHub Release tagged `agent-vX.Y.Z`, upload the exe as an asset, copy the asset's direct download URL.
+5. On Render → Environment, set:
+   - `AGENT_VERSION` = `X.Y.Z`
+   - `AGENT_DOWNLOAD_URL` = the release asset URL
+   - `AGENT_SHA256` = the lowercase hex from step 3
+6. Save (redeploy). Existing agents poll `/api/v1/agent/latest` within ~6 hours (or tray → **Check for updates**) and self-swap after verifying the hash. See ADR-0009.
+
 ## Deploy
 Push to `main` → CI green → Render auto-deploys from the Blueprint. Rollback: Render dashboard → previous deploy → "Rollback".
 

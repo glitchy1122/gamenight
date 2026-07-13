@@ -1,34 +1,41 @@
-// The agent's entire UI (SDD §12): a tray icon and four menu items.
-// The real dashboard is the website; the agent stays invisible.
+// The agent's tray UI (SDD §12). Status window is optional visual feedback;
+// the agent still runs headless in the tray when the window is closed.
 namespace GameNight.Agent;
 
 public sealed class TrayIcon : IDisposable
 {
     private readonly NotifyIcon _icon;
     private readonly ContextMenuStrip _menu;
+    private readonly ToolStripMenuItem _status;
+    private readonly ToolStripMenuItem _pause;
     private bool _paused;
+    private string _connectionStatus = "starting…";
     public event Action<bool>? PauseToggled;
+    public event Action? UpdateCheckRequested;
+    public event Action? OpenStatusRequested;
 
     public TrayIcon(string serverUrl, ServerLink link)
     {
         var menu = new ContextMenuStrip();
         _menu = menu;
-        var status = new ToolStripMenuItem("starting…") { Enabled = false };
-        var pause = new ToolStripMenuItem("Pause monitoring");
-        menu.Items.Add(status);
+        _status = new ToolStripMenuItem(StatusLabel()) { Enabled = false };
+        var version = new ToolStripMenuItem($"Version {AgentInfo.Version}") { Enabled = false };
+        _pause = new ToolStripMenuItem("Pause monitoring");
+        var checkUpdate = new ToolStripMenuItem("Check for updates");
+        menu.Items.Add(_status);
+        menu.Items.Add(version);
         menu.Items.Add(new ToolStripSeparator());
+        menu.Items.Add("Open status", null, (_, _) => OpenStatusRequested?.Invoke());
         menu.Items.Add("Open dashboard", null, (_, _) =>
             System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(serverUrl) { UseShellExecute = true }));
-        menu.Items.Add(pause);
+        menu.Items.Add(checkUpdate);
+        menu.Items.Add(_pause);
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add("Quit", null, (_, _) => Application.Exit());
 
-        pause.Click += (_, _) =>
-        {
-            _paused = !_paused;
-            pause.Text = _paused ? "Resume monitoring" : "Pause monitoring";
-            PauseToggled?.Invoke(_paused);
-        };
+        checkUpdate.Click += (_, _) => UpdateCheckRequested?.Invoke();
+
+        _pause.Click += (_, _) => SetPaused(!_paused, raiseEvent: true);
 
         // BeginInvoke needs a native handle; a ContextMenuStrip only creates
         // one when first opened. Force it now, or early status updates throw.
@@ -36,11 +43,12 @@ public sealed class TrayIcon : IDisposable
 
         _icon = new NotifyIcon
         {
-            Icon = System.Drawing.SystemIcons.Application,
-            Text = "GameNight agent",
+            Icon = AppIcon.ForTray,
+            Text = TipText(),
             Visible = true,
             ContextMenuStrip = menu,
         };
+        _icon.DoubleClick += (_, _) => OpenStatusRequested?.Invoke();
 
         link.StatusChanged += s =>
         {
@@ -48,17 +56,42 @@ public sealed class TrayIcon : IDisposable
             {
                 menu.BeginInvoke(() =>
                 {
-                    status.Text = s;
-                    string tip = $"GameNight — {s}";
-                    _icon.Text = tip[..Math.Min(63, tip.Length)];
+                    _connectionStatus = s;
+                    _status.Text = StatusLabel();
+                    _icon.Text = TipText();
                 });
             }
             catch { /* UI cosmetics must NEVER kill the connection loop */ }
         };
     }
 
-    /// <summary>Show a native Windows toast (balloon tip). Phase 4.</summary>
-    /// Safe to call from any thread — marshals to the UI thread via the menu.
+    public void SetPaused(bool paused, bool raiseEvent = false)
+    {
+        void Apply()
+        {
+            if (_paused == paused && !raiseEvent) return;
+            _paused = paused;
+            _pause.Text = _paused ? "Resume monitoring" : "Pause monitoring";
+            if (raiseEvent) PauseToggled?.Invoke(_paused);
+        }
+        try
+        {
+            if (_menu.InvokeRequired) _menu.BeginInvoke(Apply);
+            else Apply();
+        }
+        catch { /* tray cosmetics must never crash */ }
+    }
+
+    private string StatusLabel() => _connectionStatus;
+
+    // NotifyIcon.Text max is 63 chars on Windows.
+    private string TipText()
+    {
+        string tip = $"GameNight v{AgentInfo.Version} — {_connectionStatus}";
+        return tip[..Math.Min(63, tip.Length)];
+    }
+
+    // Balloon tip; marshals onto the UI thread.
     public void ShowToast(string title, string body)
     {
         void Show()
