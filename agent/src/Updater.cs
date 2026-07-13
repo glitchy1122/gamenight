@@ -153,10 +153,7 @@ public static class Updater
             string verLabel = FormatVersionLabel(latest.Version);
             Progress($"Downloading v{verLabel}…");
             Log($"downloading v{latest.Version} from {latest.Url}");
-            await DownloadAsync(latest.Url, pending, pct =>
-                Progress(pct is null
-                    ? $"Downloading v{verLabel}…"
-                    : $"Downloading v{verLabel}… {pct}%"));
+            await DownloadAsync(latest.Url, pending, Progress, verLabel);
 
             Progress("Verifying…");
             string actual = ComputeSha256Hex(pending);
@@ -251,27 +248,42 @@ public static class Updater
         return s.ToLowerInvariant();
     }
 
-    private static async Task DownloadAsync(string url, string destPath, Action<int?>? onPercent = null)
+    /// <summary>
+    /// One continuous download into a single <c>.partial</c> file, then rename.
+    /// Byte buffering is normal HTTP streaming — not multiple downloads.
+    /// Only a labeled retry (network failure) restarts from 0%.
+    /// </summary>
+    private static async Task DownloadAsync(
+        string url, string destPath, Action<string> onProgress, string verLabel)
     {
         const int maxAttempts = 3;
+        // Stable name so Explorer shows one file growing, not GUID "chunks".
+        string tmp = destPath + ".partial";
         Exception? last = null;
+
         for (int attempt = 1; attempt <= maxAttempts; attempt++)
         {
-            string tmp = destPath + $".partial-{Environment.ProcessId}-{Guid.NewGuid():N}";
             try
             {
+                if (attempt > 1)
+                    onProgress($"Retrying download ({attempt}/{maxAttempts})…");
+                else
+                    onProgress($"Downloading v{verLabel}…");
+
+                TryDelete(tmp);
+                TryDelete(destPath);
+
                 using var req = new HttpRequestMessage(HttpMethod.Get, url);
                 using var resp = await Http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead);
                 resp.EnsureSuccessStatusCode();
                 long? total = resp.Content.Headers.ContentLength;
 
-                // Dispose streams BEFORE rename — Windows will not Move a file that
-                // still has an open write handle (caused the download-loop bug).
+                // Dispose streams BEFORE rename — Windows locks files with open writers.
                 {
                     await using var input = await resp.Content.ReadAsStreamAsync();
                     await using var output = new FileStream(
-                        tmp, FileMode.CreateNew, FileAccess.Write, FileShare.None);
-                    var buffer = new byte[81920];
+                        tmp, FileMode.Create, FileAccess.Write, FileShare.None);
+                    var buffer = new byte[256 * 1024];
                     long copied = 0;
                     int lastPct = -1;
                     int read;
@@ -281,22 +293,18 @@ public static class Updater
                         copied += read;
                         if (total is > 0)
                         {
-                            int pct = (int)(copied * 100 / total.Value);
-                            if (pct != lastPct && (pct == 100 || pct - lastPct >= 5))
+                            int pct = (int)Math.Min(100, copied * 100 / total.Value);
+                            if (pct != lastPct && (pct == 100 || pct - lastPct >= 2 || lastPct < 0))
                             {
                                 lastPct = pct;
-                                try { onPercent?.Invoke(pct); } catch { }
+                                onProgress($"Downloading v{verLabel}… {pct}%");
                             }
-                        }
-                        else if (lastPct < 0)
-                        {
-                            lastPct = 0;
-                            try { onPercent?.Invoke(null); } catch { }
                         }
                     }
                     await output.FlushAsync();
                 }
 
+                onProgress($"Downloading v{verLabel}… 100%");
                 await ReplaceFileWithRetryAsync(tmp, destPath);
                 return;
             }
