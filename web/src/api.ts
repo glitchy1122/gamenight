@@ -85,4 +85,10 @@ export const api = {
         };
       }>(r),
     ),
+  warriors: () =>
+    fetch("/api/v1/warriors").then((r) =>
+      json<{
+        warriors: { name: string; title: string | null; imageUrl: string }[];
+      }>(r),
+    ),
 };
