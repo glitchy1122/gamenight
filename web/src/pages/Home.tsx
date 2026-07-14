@@ -3,6 +3,7 @@ import { Link } from "react-router-dom";
 import { api, type Me } from "../api";
 import { useLiveData } from "../presence";
 import { MeshMatrix } from "./Matrix";
+import { Squad } from "./Squad";
 
 const STATE_META = {
   in_game: { dot: "#22c55e", label: "IN GAME 🎮" },
@@ -123,6 +124,8 @@ export function Home({ me }: { me: Me }) {
           recommendation={recommendation}
         />
       </div>
+
+      <Squad championName={recommendation?.hostName} />
 
       <h3 style={{ marginTop: "2rem" }}>Link your PC</h3>
       <LinkDevice />
