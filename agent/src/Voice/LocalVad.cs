@@ -1,102 +1,101 @@
-// Local mic voice-activity detection (RMS). Broadcast via VoiceEngine → peer:speaking.
-using NAudio.Wave;
-
+// Local speaking detection + transmit gate (energy VAD).
+// Same threshold drives UI "Speaking" and the open-mic Opus noise gate.
 namespace GameNight.Agent.Voice;
 
-public sealed class LocalVad : IDisposable
+public sealed class LocalVad
 {
-    private readonly WaveInEvent? _waveIn;
+    public const int DefaultHangoverMs = 500;
+
     private float _threshold;
     private readonly int _hangoverMs;
+    private readonly int _attackFrames;
+    private int _hotStreak;
     private bool _speaking;
     private bool _enabled = true;
     private DateTime _lastVoiceUtc = DateTime.MinValue;
-    private bool _disposed;
 
     public event Action<bool>? SpeakingChanged;
 
     public bool IsSpeaking => _speaking;
     public float Threshold => _threshold;
 
-    public LocalVad(float threshold = 0.02f, int hangoverMs = 350)
+    public LocalVad(float threshold = 0.012f, int hangoverMs = DefaultHangoverMs, int attackFrames = 2)
     {
-        _threshold = Math.Clamp(threshold, 0.001f, 0.25f);
-        _hangoverMs = hangoverMs;
-
-        try
-        {
-            if (WaveInEvent.DeviceCount <= 0)
-            {
-                AgentLog.Write("voice.log", "VAD: no capture devices");
-                return;
-            }
-
-            _waveIn = new WaveInEvent
-            {
-                WaveFormat = new WaveFormat(16000, 16, 1),
-                BufferMilliseconds = 40,
-                NumberOfBuffers = 2,
-            };
-            _waveIn.DataAvailable += OnData;
-            _waveIn.StartRecording();
-        }
-        catch (Exception ex)
-        {
-            AgentLog.Write("voice.log", $"VAD start failed: {ex.Message}");
-            try { _waveIn?.Dispose(); } catch { /* ignore */ }
-            _waveIn = null;
-        }
+        _threshold = Math.Clamp(threshold, 0.0005f, 0.25f);
+        _hangoverMs = Math.Clamp(hangoverMs, 50, 2000);
+        _attackFrames = Math.Clamp(attackFrames, 1, 8);
     }
 
     public void SetEnabled(bool enabled)
     {
         _enabled = enabled;
-        if (!enabled) SetSpeaking(false);
+        if (!enabled)
+        {
+            _hotStreak = 0;
+            SetSpeaking(false);
+        }
     }
 
-    /// <summary>Lower threshold = more sensitive (picks up quieter speech).</summary>
-    public void SetThreshold(float threshold)
-    {
-        _threshold = Math.Clamp(threshold, 0.001f, 0.25f);
-    }
+    public void SetThreshold(float threshold) =>
+        _threshold = Math.Clamp(threshold, 0.0005f, 0.25f);
 
-    /// <summary>Force speaking on (e.g. while PTT is held).</summary>
     public void ForceSpeaking(bool speaking)
     {
         if (speaking)
         {
             _lastVoiceUtc = DateTime.UtcNow;
+            _hotStreak = _attackFrames;
             SetSpeaking(true);
         }
         else if (!_enabled)
         {
+            _hotStreak = 0;
             SetSpeaking(false);
         }
     }
 
-    private void OnData(object? sender, WaveInEventArgs e)
+    /// <summary>
+    /// Update speaking from PCM and return whether this frame should be transmitted.
+    /// Hangover keeps the gate open after energy drops (same flag as UI Speaking).
+    /// </summary>
+    public bool ShouldTransmitPcm(short[] pcm)
     {
-        if (!_enabled || e.BytesRecorded < 4) return;
+        if (!_enabled) return false;
+        ObservePcm(pcm);
+        return _speaking;
+    }
 
-        int samples = e.BytesRecorded / 2;
+    public void ObservePcm(short[] pcm)
+    {
+        if (!_enabled || pcm.Length == 0) return;
+
         double sum = 0;
-        for (int i = 0; i < e.BytesRecorded; i += 2)
+        foreach (short s in pcm)
         {
-            short s = (short)(e.Buffer[i] | (e.Buffer[i + 1] << 8));
             double v = s / 32768.0;
             sum += v * v;
         }
-        float rms = (float)Math.Sqrt(sum / Math.Max(1, samples));
+        float rms = (float)Math.Sqrt(sum / pcm.Length);
+        ObserveLevel(rms);
+    }
 
-        if (rms >= _threshold)
+    private void ObserveLevel(float level)
+    {
+        if (level >= _threshold)
         {
+            _hotStreak++;
             _lastVoiceUtc = DateTime.UtcNow;
-            SetSpeaking(true);
+            if (_hotStreak >= _attackFrames)
+                SetSpeaking(true);
         }
-        else if (_speaking
-                 && (DateTime.UtcNow - _lastVoiceUtc).TotalMilliseconds > _hangoverMs)
+        else
         {
-            SetSpeaking(false);
+            _hotStreak = 0;
+            if (_speaking
+                && (DateTime.UtcNow - _lastVoiceUtc).TotalMilliseconds > _hangoverMs)
+            {
+                SetSpeaking(false);
+            }
         }
     }
 
@@ -107,20 +106,9 @@ public sealed class LocalVad : IDisposable
         try { SpeakingChanged?.Invoke(speaking); } catch { /* ignore */ }
     }
 
-    public void Dispose()
+    public void Reset()
     {
-        if (_disposed) return;
-        _disposed = true;
-        if (_waveIn is not null)
-        {
-            try
-            {
-                _waveIn.DataAvailable -= OnData;
-                _waveIn.StopRecording();
-                _waveIn.Dispose();
-            }
-            catch { /* ignore */ }
-        }
+        _hotStreak = 0;
         SetSpeaking(false);
     }
 }

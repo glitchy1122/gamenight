@@ -139,16 +139,16 @@ public sealed class AgentStatusForm : Form
         KeyDown += async (_, e) =>
         {
             if (IsTypingTarget(ActiveControl)) return;
-            if (e.KeyCode is Keys.D2 or Keys.NumPad2)
-            {
-                e.SuppressKeyPress = true;
-                await _voiceTab.TryHandlePttHotkeyAsync(true);
-            }
+            var hotkey = _voiceTab.PttHotkey;
+            if (hotkey is null || !hotkey.MatchesKeys(e.KeyCode)) return;
+            e.SuppressKeyPress = true;
+            await _voiceTab.TryHandlePttHotkeyAsync(true);
         };
         KeyUp += async (_, e) =>
         {
-            if (e.KeyCode is Keys.D2 or Keys.NumPad2)
-                await _voiceTab.TryHandlePttHotkeyAsync(false);
+            var hotkey = _voiceTab.PttHotkey;
+            if (hotkey is null || !hotkey.MatchesKeys(e.KeyCode)) return;
+            await _voiceTab.TryHandlePttHotkeyAsync(false);
         };
 
         RefreshMonitoringLabel();

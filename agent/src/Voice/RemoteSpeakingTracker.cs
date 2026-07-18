@@ -8,19 +8,20 @@ internal sealed class RemoteSpeakingTracker
 
     public RemoteSpeakingTracker(int hangoverMs = 400) => _hangoverMs = hangoverMs;
 
-    public bool ObservePcmu(string socketId, byte[] payload, out bool changed, out bool speaking)
+    public bool ObservePcm(string socketId, short[] pcm, out bool changed, out bool speaking)
     {
         changed = false;
         speaking = false;
-        if (payload.Length == 0) return false;
+        if (pcm.Length == 0) return false;
 
-        int hot = 0;
-        foreach (byte b in payload)
+        double sum = 0;
+        foreach (short s in pcm)
         {
-            // μ-law idle is typically 0xFF / 0x7F
-            if (b is not (0xFF or 0x7F)) hot++;
+            double v = s / 32768.0;
+            sum += v * v;
         }
-        bool voice = hot > payload.Length / 10;
+        float rms = (float)Math.Sqrt(sum / pcm.Length);
+        bool voice = rms > 0.008f;
 
         DateTime now = DateTime.UtcNow;
         _state.TryGetValue(socketId, out var prev);

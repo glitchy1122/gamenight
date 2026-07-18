@@ -1,5 +1,5 @@
-// Non-consuming PTT on key "2" / numpad 2.
-// Uses a low-level keyboard hook so other apps (and typing) still receive the key.
+// Non-consuming global PTT via WH_KEYBOARD_LL.
+// Bound VK is user-configurable; keys are never swallowed (CallNextHookEx always).
 // Listening is enabled only while joined to a room with push-to-talk on.
 using System.Runtime.InteropServices;
 
@@ -7,13 +7,13 @@ namespace GameNight.Agent.Voice;
 
 public sealed class PttHotkey : IDisposable
 {
+    public const int DefaultVk = 0x32; // '2'
+
     private const int WhKeyboardLl = 13;
     private const int WmKeyDown = 0x0100;
     private const int WmKeyUp = 0x0101;
     private const int WmSysKeyDown = 0x0104;
     private const int WmSysKeyUp = 0x0105;
-    private const int Vk2 = 0x32;
-    private const int VkNumpad2 = 0x62;
 
     private readonly LowLevelKeyboardProc _proc;
     private readonly object _gate = new();
@@ -21,17 +21,56 @@ public sealed class PttHotkey : IDisposable
     private bool _listening;
     private bool _armed;
     private bool _disposed;
+    private int _boundVk = DefaultVk;
+    private int? _numpadTwin;
 
     public event Action<bool>? PttChanged; // true=down, false=up
+
+    public int BoundVk
+    {
+        get { lock (_gate) return _boundVk; }
+    }
 
     public PttHotkey()
     {
         // Keep delegate alive for the native hook lifetime.
         _proc = HookCallback;
+        SetBoundKey(DefaultVk);
     }
 
     /// <summary>
-    /// When true, hold-2 raises PttChanged. When false, key 2 is ignored for voice
+    /// Persist primary VK. Digit-row keys (0–9) also accept the matching numpad twin.
+    /// </summary>
+    public void SetBoundKey(int vkCode)
+    {
+        lock (_gate)
+        {
+            _boundVk = vkCode & 0xFF;
+            _numpadTwin = DigitRowToNumpad(_boundVk);
+            if (_armed)
+            {
+                _armed = false;
+                try { PttChanged?.Invoke(false); } catch { /* ignore */ }
+            }
+        }
+    }
+
+    public bool MatchesVk(int vkCode)
+    {
+        lock (_gate)
+        {
+            int vk = vkCode & 0xFF;
+            return vk == _boundVk || (_numpadTwin is int twin && vk == twin);
+        }
+    }
+
+    public bool MatchesKeys(Keys key)
+    {
+        return MatchesVk((int)key);
+    }
+
+    /// <summary>
+    /// When true, holding the bound key raises PttChanged. When false, the key is ignored for voice
     /// (and is never swallowed either way — typing always works).
     /// </summary>
     public void SetListening(bool enabled)
@@ -89,7 +128,7 @@ public sealed class PttHotkey : IDisposable
         {
             int msg = wParam.ToInt32();
             var info = Marshal.PtrToStructure<KbdLlHookStruct>(lParam);
-            if (info.VkCode is Vk2 or VkNumpad2)
+            if (MatchesVk(info.VkCode))
             {
                 bool down = msg is WmKeyDown or WmSysKeyDown;
                 bool up = msg is WmKeyUp or WmSysKeyUp;
@@ -114,6 +153,44 @@ public sealed class PttHotkey : IDisposable
     private void Raise(bool down)
     {
         try { PttChanged?.Invoke(down); } catch { /* ignore */ }
+    }
+
+    /// <summary>Map digit-row VK 0x30–0x39 to numpad 0x60–0x69; otherwise null.</summary>
+    private static int? DigitRowToNumpad(int vk)
+    {
+        if (vk is >= 0x30 and <= 0x39)
+            return 0x60 + (vk - 0x30);
+        return null;
+    }
+
+    public static string DescribeVk(int vkCode)
+    {
+        int vk = vkCode & 0xFF;
+        if (vk is >= 0x30 and <= 0x39)
+            return ((char)vk).ToString();
+        if (vk is >= 0x41 and <= 0x5A)
+            return ((char)vk).ToString();
+        if (vk is >= 0x70 and <= 0x7B)
+            return "F" + (vk - 0x6F);
+        return vk switch
+        {
+            0x20 => "Space",
+            0x09 => "Tab",
+            0x0D => "Enter",
+            0xBC => ",",
+            0xBE => ".",
+            0xBF => "/",
+            0xBA => ";",
+            0xDE => "'",
+            0xDB => "[",
+            0xDD => "]",
+            0xDC => "\\",
+            0xBD => "-",
+            0xBB => "=",
+            0xC0 => "`",
+            _ when vk is >= 0x60 and <= 0x69 => "Num" + (vk - 0x60),
+            _ => $"VK 0x{vk:X2}",
+        };
     }
 
     private delegate IntPtr LowLevelKeyboardProc(int nCode, IntPtr wParam, IntPtr lParam);

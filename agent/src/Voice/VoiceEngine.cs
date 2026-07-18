@@ -1,27 +1,42 @@
 // Native WebRTC mesh voice client (SIPSorcery) + voice-server Socket.IO signaling.
+// v0.10: Opus 48 kHz mono, receive jitter buffer, NAudio speaker sink (no Media.Windows).
 using System.Collections.Concurrent;
+using System.Net;
 using SIPSorcery.Media;
 using SIPSorcery.Net;
 using SIPSorceryMedia.Abstractions;
-using SIPSorceryMedia.Windows;
 
 namespace GameNight.Agent.Voice;
 
+public enum PeerMediaLinkState
+{
+    Linking,
+    Linked,
+    Failed,
+}
+
 public sealed class VoiceEngine : IDisposable
 {
-    private static readonly RTCIceServer[] IceServers =
+    private static readonly RTCIceServer[] StunServers =
     {
         new() { urls = "stun:stun.l.google.com:19302" },
         new() { urls = "stun:stun1.l.google.com:19302" },
+        new() { urls = "stun:stun2.l.google.com:19302" },
+        new() { urls = "stun:stun.cloudflare.com:3478" },
     };
+
+    private static readonly AudioFormat LockedOpus = SharedMicSource.LockedOpus;
 
     private readonly VoipSignaling _signaling = new();
     private readonly ConcurrentDictionary<string, PeerSlot> _peers = new();
     private readonly object _gate = new();
+    private readonly List<(ushort Seq, uint Ts, byte[] Payload)> _drainScratch = new(8);
 
-    private WindowsAudioEndPoint? _mic;
+    private SharedMicSource? _sharedMic;
     private LocalVad? _vad;
     private readonly RemoteSpeakingTracker _remoteSpeak = new();
+    private bool _talkViaRadmin;
+    private IPAddress? _radminBind;
     private bool _connected;
     private bool _muted;
     private bool _pushToTalk;
@@ -32,6 +47,7 @@ public sealed class VoiceEngine : IDisposable
     private string _displayName = "Anonymous";
 
     public bool IsConnected => _connected;
+    public bool TalkViaRadmin => _talkViaRadmin;
     public string PeerId => _peerId;
     public string DisplayName => _displayName;
 
@@ -40,25 +56,45 @@ public sealed class VoiceEngine : IDisposable
     public event Action<VoicePeerInfo>? PeerJoined;
     public event Action<VoicePeerInfo>? PeerLeft;
     public event Action<VoicePeerInfo, bool>? PeerSpeaking;
+    public event Action<VoicePeerInfo, PeerMediaLinkState>? PeerMediaState;
     public event Action<bool>? LocalSpeaking;
     public event Action<string>? Error;
     public event Action<bool>? MutedChanged;
 
-    public async Task ConnectAsync(string serverUrl, string roomId, string displayName, bool pushToTalk, int micSensitivity = 55)
+    public async Task ConnectAsync(
+        string serverUrl,
+        string roomId,
+        string displayName,
+        bool pushToTalk,
+        int micSensitivity = 55,
+        bool shareMicWithOtherApps = true,
+        bool talkViaRadmin = false)
     {
         if (_connected) throw new InvalidOperationException("Already connected. Leave first.");
 
         if (!VoiceRooms.TryNormalize(roomId, out string room, out string? roomErr))
             throw new InvalidOperationException(roomErr ?? VoiceRooms.Hint);
 
+        _talkViaRadmin = talkViaRadmin;
+        _radminBind = null;
+        if (_talkViaRadmin)
+        {
+            if (!RadminIce.TryGetBindAddress(out IPAddress bind))
+                throw new InvalidOperationException(
+                    "Radmin VPN not connected (no 26.x address). Open Radmin VPN, then join again.");
+            _radminBind = bind;
+            AgentLog.Write("voice.log", $"ICE: Radmin P2P bind={bind}");
+        }
+        else
+        {
+            AgentLog.Write("voice.log", "ICE: VoIP (STUN)");
+        }
+
         _displayName = string.IsNullOrWhiteSpace(displayName) ? "Anonymous" : displayName.Trim();
         _peerId = Guid.NewGuid().ToString("D");
         _pushToTalk = pushToTalk;
         _muted = pushToTalk;
         _pttActive = false;
-
-        _mic = new WindowsAudioEndPoint(new AudioEncoder(), disableSource: false, disableSink: true);
-        _mic.RestrictFormats(f => f.Codec == AudioCodecsEnum.PCMU || f.Codec == AudioCodecsEnum.PCMA);
 
         _signaling.PeerJoined += OnRemotePeerJoined;
         _signaling.PeerLeft += OnRemotePeerLeft;
@@ -72,14 +108,36 @@ public sealed class VoiceEngine : IDisposable
             Error?.Invoke($"Voice server disconnected ({reason})");
         };
 
-        await _signaling.ConnectAsync(serverUrl);
-        await _mic.StartAudio();
+        await _signaling.ConnectAsync(serverUrl).WaitAsync(TimeSpan.FromSeconds(15)).ConfigureAwait(false);
 
-        if (_muted) await _mic.PauseAudio();
-
-        _vad = new LocalVad(SensitivityToThreshold(micSensitivity));
+        // Create VAD before mic start so gate + Speaking UI share one instance/threshold.
+        _vad = new LocalVad(SensitivityToThreshold(micSensitivity), LocalVad.DefaultHangoverMs);
         _vad.SetEnabled(!_muted);
         _vad.SpeakingChanged += OnLocalVadSpeaking;
+
+        var shared = new SharedMicSource();
+        shared.SetSharedMode(shareMicWithOtherApps);
+        shared.Error += msg => Error?.Invoke(msg);
+        shared.SetFormat(LockedOpus);
+        shared.ShouldTransmit = pcm =>
+        {
+            if (_pushToTalk)
+            {
+                // PTT-only transmit gate; still feed VAD for Speaking UI while held.
+                if (_pttActive)
+                    _vad?.ObservePcm(pcm);
+                return _pttActive;
+            }
+
+            return _vad!.ShouldTransmitPcm(pcm);
+        };
+        shared.EncodedSample += OnMicEncoded;
+        _sharedMic = shared;
+        // Mic open/init off the UI thread (WASAPI activate must not touch WinForms SyncContext).
+        if (!_muted)
+            await Task.Run(() => shared.Start()).ConfigureAwait(false);
+        AgentLog.Write("voice.log",
+            $"mic: SharedMicSource Opus 48 kHz ({(shareMicWithOtherApps ? "shared" : "exclusive")} WASAPI)");
 
         var ack = await _signaling.JoinRoomAsync(room, _peerId, _displayName);
         if (!string.IsNullOrEmpty(ack.Error))
@@ -94,7 +152,7 @@ public sealed class VoiceEngine : IDisposable
         _connected = true;
         Connected?.Invoke();
         MutedChanged?.Invoke(_muted);
-        AgentLog.Write("voice.log", $"joined room={room} as {_displayName}");
+        AgentLog.Write("voice.log", $"joined room={room} as {_displayName} (Opus-only SDP)");
     }
 
     public async Task DisconnectAsync()
@@ -133,9 +191,13 @@ public sealed class VoiceEngine : IDisposable
         _muted = muted;
         _vad?.SetEnabled(!_muted);
         if (_muted) SetLocalSpeaking(false);
-        if (_mic is null) { MutedChanged?.Invoke(_muted); return; }
-        if (_muted) await _mic.PauseAudio();
-        else await _mic.ResumeAudio();
+        if (_sharedMic is null)
+        {
+            MutedChanged?.Invoke(_muted);
+            return;
+        }
+        if (_muted) await PauseMicAsync();
+        else await ResumeMicAsync();
         MutedChanged?.Invoke(_muted);
     }
 
@@ -143,19 +205,20 @@ public sealed class VoiceEngine : IDisposable
 
     public async Task SetPttAsync(bool active)
     {
-        if (!_pushToTalk || _mic is null) return;
+        if (!_pushToTalk) return;
+        if (_sharedMic is null) return;
         _pttActive = active;
         _muted = !active;
         _vad?.SetEnabled(active);
         if (active)
         {
-            await _mic.ResumeAudio();
+            await ResumeMicAsync();
             _vad?.ForceSpeaking(true);
             SetLocalSpeaking(true);
         }
         else
         {
-            await _mic.PauseAudio();
+            await PauseMicAsync();
             _vad?.ForceSpeaking(false);
             SetLocalSpeaking(false);
         }
@@ -178,8 +241,42 @@ public sealed class VoiceEngine : IDisposable
     public static float SensitivityToThreshold(int sensitivity)
     {
         int s = Math.Clamp(sensitivity, 1, 100);
-        // 1 → 0.08 (deaf), 100 → 0.004 (very sensitive)
-        return 0.08f - ((s - 1) / 99f) * 0.076f;
+        // More sensitive overall so speech opens Speaking + gate reliably.
+        // 1 → 0.04 (deaf), 100 → 0.002 (very sensitive); default 55 ≈ 0.019
+        return 0.04f - ((s - 1) / 99f) * 0.038f;
+    }
+
+    private void OnMicEncoded(uint duration, byte[] sample)
+    {
+        if (_muted) return;
+
+        foreach (var slot in _peers.Values)
+        {
+            if (slot.Pc is null) continue;
+            // Skip only hard failures — allow send while Linking so RTP can start as soon as DTLS is up.
+            if (slot.LinkState == PeerMediaLinkState.Failed) continue;
+            try { slot.Pc.SendAudio(duration, sample); } catch { /* peer may be closing / not ready */ }
+        }
+    }
+
+    private void SetPeerLink(PeerSlot slot, PeerMediaLinkState state)
+    {
+        if (slot.LinkState == state) return;
+        slot.LinkState = state;
+        try { PeerMediaState?.Invoke(slot.Info, state); } catch { /* ignore */ }
+    }
+
+    private async Task PauseMicAsync()
+    {
+        _sharedMic?.Pause();
+        await Task.CompletedTask;
+    }
+
+    private async Task ResumeMicAsync()
+    {
+        if (_sharedMic is null) return;
+        // Start() may open WASAPI — never do that on the UI thread.
+        await Task.Run(() => _sharedMic.Resume()).ConfigureAwait(false);
     }
 
     private void OnLocalVadSpeaking(bool speaking)
@@ -206,7 +303,7 @@ public sealed class VoiceEngine : IDisposable
         try
         {
             _vad.SpeakingChanged -= OnLocalVadSpeaking;
-            _vad.Dispose();
+            _vad.Reset();
         }
         catch { /* ignore */ }
         _vad = null;
@@ -288,6 +385,8 @@ public sealed class VoiceEngine : IDisposable
         {
             if (!_peers.TryGetValue(from, out var slot) || slot.Pc is null) return;
             if (string.IsNullOrEmpty(ice.Candidate)) return;
+            if (_talkViaRadmin && !RadminIce.IsRadminCandidateString(ice.Candidate))
+                return;
             slot.Pc.addIceCandidate(new RTCIceCandidateInit
             {
                 candidate = ice.Candidate,
@@ -315,87 +414,97 @@ public sealed class VoiceEngine : IDisposable
 
     private RTCPeerConnection CreatePeerConnection(PeerSlot slot)
     {
-        var pc = new RTCPeerConnection(new RTCConfiguration { iceServers = IceServers.ToList() });
-
-        slot.Speaker = new WindowsAudioEndPoint(new AudioEncoder(), disableSource: true, disableSink: false);
-        slot.Speaker.RestrictFormats(f => f.Codec == AudioCodecsEnum.PCMU || f.Codec == AudioCodecsEnum.PCMA);
-        slot.Decoder ??= new AudioEncoder();
-
-        var formats = _mic!.GetAudioSourceFormats();
-        var track = new MediaStreamTrack(formats, MediaStreamStatusEnum.SendRecv);
-        pc.addTrack(track);
-
-        _mic.OnAudioSourceEncodedSample += (duration, sample) =>
+        var cfg = new RTCConfiguration
         {
-            if (_muted) return;
-            try { pc.SendAudio(duration, sample); } catch { /* peer may be closing */ }
+            iceServers = _talkViaRadmin ? [] : StunServers.ToList(),
         };
+        if (_talkViaRadmin && _radminBind is not null)
+        {
+            cfg.X_BindAddress = _radminBind;
+        }
+        else
+        {
+            // VoIP: gather host candidates on every NIC (including Radmin 26.x when present).
+            cfg.X_ICEIncludeAllInterfaceAddresses = true;
+        }
+
+        var pc = new RTCPeerConnection(cfg);
+        SetPeerLink(slot, PeerMediaLinkState.Linking);
+
+        slot.Speaker = new PcmSpeakerSink();
+        slot.Decoder ??= new AudioEncoder(includeLinearFormats: false, includeOpus: true);
+        slot.Jitter ??= new OpusJitterBuffer();
+
+        var track = new MediaStreamTrack([LockedOpus], MediaStreamStatusEnum.SendRecv);
+        pc.addTrack(track);
 
         pc.OnAudioFormatsNegotiated += formatsNegotiated =>
         {
-            var fmt = formatsNegotiated.First();
+            var fmt = formatsNegotiated.FirstOrDefault(f => f.Codec == AudioCodecsEnum.OPUS);
+            if (fmt.Codec == AudioCodecsEnum.Unknown)
+                fmt = LockedOpus;
             slot.AudioFormat = fmt;
-            _mic.SetAudioSourceFormat(fmt);
-            slot.Speaker.SetAudioSinkFormat(fmt);
+            _sharedMic?.SetFormat(fmt);
+            AgentLog.Write("voice.log",
+                $"negotiated audio with {slot.Info.DisplayName}: {fmt.Codec} {fmt.ClockRate}Hz ch={fmt.ChannelCount} pt={fmt.FormatID}");
         };
 
         pc.OnRtpPacketReceived += (ep, media, pkt) =>
         {
             if (media != SDPMediaTypesEnum.audio || slot.Speaker is null) return;
+            _ = ep;
+
+            slot.Jitter!.Push(pkt.Header.SequenceNumber, pkt.Header.Timestamp, pkt.Payload);
+
+            _drainScratch.Clear();
+            slot.Jitter.Drain(_drainScratch);
 
             float vol = slot.Volume;
-            if (vol < 0.01f)
+            foreach (var item in _drainScratch)
             {
-                // Muted for this peer — still track speaking for UI.
-            }
-            else if (vol >= 0.99f || slot.AudioFormat.Codec == AudioCodecsEnum.Unknown)
-            {
-                slot.Speaker.GotAudioRtp(
-                    ep,
-                    pkt.Header.SyncSource,
-                    pkt.Header.SequenceNumber,
-                    pkt.Header.Timestamp,
-                    pkt.Header.PayloadType,
-                    pkt.Header.MarkerBit == 1,
-                    pkt.Payload);
-            }
-            else
-            {
+                byte[] payload = item.Payload;
                 try
                 {
-                    short[] pcm = slot.Decoder!.DecodeAudio(pkt.Payload, slot.AudioFormat);
-                    for (int i = 0; i < pcm.Length; i++)
-                        pcm[i] = (short)Math.Clamp((int)(pcm[i] * vol), short.MinValue, short.MaxValue);
-                    byte[] pcmBytes = new byte[pcm.Length * 2];
-                    Buffer.BlockCopy(pcm, 0, pcmBytes, 0, pcmBytes.Length);
-                    slot.Speaker.GotAudioSample(pcmBytes);
-                }
-                catch
-                {
-                    slot.Speaker.GotAudioRtp(
-                        ep,
-                        pkt.Header.SyncSource,
-                        pkt.Header.SequenceNumber,
-                        pkt.Header.Timestamp,
-                        pkt.Header.PayloadType,
-                        pkt.Header.MarkerBit == 1,
-                        pkt.Payload);
-                }
-            }
+                    short[] pcm = slot.Decoder!.DecodeAudio(payload, slot.AudioFormat.Codec == AudioCodecsEnum.Unknown
+                        ? LockedOpus
+                        : slot.AudioFormat);
 
-            // Audio-energy speaking indicator (works even if peer VAD broadcast is late).
-            if (_remoteSpeak.ObservePcmu(slot.Info.SocketId, pkt.Payload, out bool changed, out bool speaking)
-                && changed)
-            {
-                PeerSpeaking?.Invoke(slot.Info, speaking);
+                    if (_remoteSpeak.ObservePcm(slot.Info.SocketId, pcm, out bool changed, out bool speaking)
+                        && changed)
+                    {
+                        PeerSpeaking?.Invoke(slot.Info, speaking);
+                    }
+
+                    if (vol < 0.01f)
+                        continue;
+
+                    if (vol < 0.99f)
+                    {
+                        for (int i = 0; i < pcm.Length; i++)
+                            pcm[i] = (short)Math.Clamp((int)(pcm[i] * vol), short.MinValue, short.MaxValue);
+                    }
+
+                    slot.Speaker.WritePcm(pcm);
+                }
+                catch (Exception ex)
+                {
+                    AgentLog.Write("voice.log", $"decode/play: {ex.Message}");
+                }
             }
         };
 
         pc.onicecandidate += async cand =>
         {
             if (cand is null || string.IsNullOrEmpty(cand.candidate)) return;
+            if (_talkViaRadmin && !RadminIce.IsRadminHostCandidate(cand))
+            {
+                AgentLog.Write("voice.log", "skip trickle non-Radmin candidate");
+                return;
+            }
             try
             {
+                AgentLog.Write("voice.log",
+                    $"ICE local → {slot.Info.DisplayName}: {TruncateCand(cand.candidate)}");
                 await _signaling.SendIceAsync(slot.Info.SocketId, new IceCandidatePayload
                 {
                     Candidate = cand.candidate,
@@ -406,16 +515,75 @@ public sealed class VoiceEngine : IDisposable
             catch (Exception ex) { AgentLog.Write("voice.log", $"send ice: {ex.Message}"); }
         };
 
+        // Mark Linked as soon as ICE is up (often before full PC "connected") so RTP can flow.
+        pc.oniceconnectionstatechange += state =>
+        {
+            AgentLog.Write("voice.log",
+                $"{slot.Info.DisplayName} ICE → {state} (mode={(_talkViaRadmin ? "radmin" : "voip")})");
+            if (state == RTCIceConnectionState.connected)
+            {
+                _ = OnPeerMediaReadyAsync(slot);
+            }
+            else if (state == RTCIceConnectionState.failed)
+            {
+                SetPeerLink(slot, PeerMediaLinkState.Failed);
+                AgentLog.Write("voice.log",
+                    $"media FAILED (ICE) with {slot.Info.DisplayName} — both peers should use the same path " +
+                    "(VoIP+VoIP or Radmin+Radmin). Prefer Radmin if STUN is blocked.");
+                Error?.Invoke(
+                    $"Link failed with {slot.Info.DisplayName}. Use matching Voice path " +
+                    "(both VoIP or both Radmin).");
+            }
+        };
+
         pc.onconnectionstatechange += async state =>
         {
-            AgentLog.Write("voice.log", $"{slot.Info.DisplayName} → {state}");
+            AgentLog.Write("voice.log",
+                $"{slot.Info.DisplayName} → {state} (ice={(_talkViaRadmin ? "radmin" : "voip")})");
             if (state == RTCPeerConnectionState.connected)
-                await slot.Speaker.StartAudioSink();
-            else if (state is RTCPeerConnectionState.failed or RTCPeerConnectionState.closed or RTCPeerConnectionState.disconnected)
-                await slot.Speaker.CloseAudioSink();
+            {
+                await OnPeerMediaReadyAsync(slot);
+            }
+            else if (state == RTCPeerConnectionState.failed)
+            {
+                SetPeerLink(slot, PeerMediaLinkState.Failed);
+                if (slot.Speaker is not null)
+                    await slot.Speaker.CloseAsync();
+            }
+            else if (state is RTCPeerConnectionState.closed or RTCPeerConnectionState.disconnected)
+            {
+                if (state == RTCPeerConnectionState.disconnected)
+                    SetPeerLink(slot, PeerMediaLinkState.Linking);
+                if (slot.Speaker is not null)
+                    await slot.Speaker.CloseAsync();
+            }
         };
 
         return pc;
+    }
+
+    private async Task OnPeerMediaReadyAsync(PeerSlot slot)
+    {
+        bool becameLinked = slot.LinkState != PeerMediaLinkState.Linked;
+        SetPeerLink(slot, PeerMediaLinkState.Linked);
+        if (becameLinked)
+            AgentLog.Write("voice.log", $"media Linked with {slot.Info.DisplayName} — RTP send enabled");
+        try
+        {
+            slot.Speaker?.Start();
+            if (!_muted)
+                await ResumeMicAsync();
+        }
+        catch (Exception ex)
+        {
+            AgentLog.Write("voice.log", $"media ready sink: {ex.Message}");
+        }
+    }
+
+    private static string TruncateCand(string? c)
+    {
+        if (string.IsNullOrEmpty(c)) return "";
+        return c.Length <= 96 ? c : c[..96] + "…";
     }
 
     private async Task ClosePeerAsync(string socketId)
@@ -424,10 +592,12 @@ public sealed class VoiceEngine : IDisposable
         try { slot.Pc?.close(); } catch { /* ignore */ }
         try
         {
+            slot.Jitter?.Clear();
             if (slot.Speaker is not null)
             {
                 using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(2));
-                await slot.Speaker.CloseAudioSink().WaitAsync(cts.Token).ConfigureAwait(false);
+                await slot.Speaker.CloseAsync().WaitAsync(cts.Token).ConfigureAwait(false);
+                slot.Speaker.Dispose();
             }
         }
         catch { /* ignore */ }
@@ -435,19 +605,20 @@ public sealed class VoiceEngine : IDisposable
 
     private async Task CleanupMediaAsync()
     {
-        WindowsAudioEndPoint? mic;
+        SharedMicSource? shared;
         lock (_gate)
         {
-            mic = _mic;
-            _mic = null;
+            shared = _sharedMic;
+            _sharedMic = null;
         }
-        if (mic is null) return;
-        try
+
+        if (shared is not null)
         {
-            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(2));
-            await mic.CloseAudio().WaitAsync(cts.Token).ConfigureAwait(false);
+            try { shared.EncodedSample -= OnMicEncoded; } catch { /* ignore */ }
+            try { shared.Dispose(); } catch { /* ignore */ }
         }
-        catch { /* ignore */ }
+
+        await Task.CompletedTask;
     }
 
     public void Dispose()
@@ -467,28 +638,35 @@ public sealed class VoiceEngine : IDisposable
                 try { slot.Pc?.close(); } catch { /* ignore */ }
                 var speaker = slot.Speaker;
                 if (speaker is not null)
-                    _ = Task.Run(async () => { try { await speaker.CloseAudioSink(); } catch { /* ignore */ } });
+                    _ = Task.Run(() => { try { speaker.Dispose(); } catch { /* ignore */ } });
             }
         }
-        WindowsAudioEndPoint? mic;
+
+        SharedMicSource? shared;
         lock (_gate)
         {
-            mic = _mic;
-            _mic = null;
+            shared = _sharedMic;
+            _sharedMic = null;
         }
-        if (mic is not null)
-            _ = Task.Run(async () => { try { await mic.CloseAudio(); } catch { /* ignore */ } });
+        if (shared is not null)
+            _ = Task.Run(() => { try { shared.Dispose(); } catch { /* ignore */ } });
     }
 
     private sealed class PeerSlot
     {
         public VoicePeerInfo Info;
         public RTCPeerConnection? Pc;
-        public WindowsAudioEndPoint? Speaker;
+        public PcmSpeakerSink? Speaker;
         public AudioEncoder? Decoder;
+        public OpusJitterBuffer? Jitter;
         public AudioFormat AudioFormat;
         public float Volume = 1f;
+        public PeerMediaLinkState LinkState = PeerMediaLinkState.Linking;
 
-        public PeerSlot(VoicePeerInfo info) => Info = info;
+        public PeerSlot(VoicePeerInfo info)
+        {
+            Info = info;
+            AudioFormat = LockedOpus;
+        }
     }
 }
