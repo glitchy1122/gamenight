@@ -98,9 +98,7 @@ export function pickBestAgentRelease(releases: GhRelease[]): ReleaseInfo | null 
 
   if (withExe.length === 0) return null;
 
-  const pool = withExe.some((x) => x.isAgentTag)
-    ? withExe.filter((x) => x.isAgentTag)
-    : withExe;
+  const pool = withExe.some((x) => x.isAgentTag) ? withExe.filter((x) => x.isAgentTag) : withExe;
 
   pool.sort((a, b) => compareSemVer(b.version, a.version));
   const best = pool[0]!;
@@ -109,16 +107,13 @@ export function pickBestAgentRelease(releases: GhRelease[]): ReleaseInfo | null 
 
 async function fetchLatestFromGitHub(config: Config): Promise<ReleaseInfo | null> {
   const { owner, repo } = config.github;
-  const res = await fetch(
-    `https://api.github.com/repos/${owner}/${repo}/releases?per_page=30`,
-    {
-      headers: {
-        Accept: 'application/vnd.github+json',
-        'User-Agent': 'gamenight-server',
-      },
-      signal: AbortSignal.timeout(8000),
+  const res = await fetch(`https://api.github.com/repos/${owner}/${repo}/releases?per_page=30`, {
+    headers: {
+      Accept: 'application/vnd.github+json',
+      'User-Agent': 'gamenight-server',
     },
-  );
+    signal: AbortSignal.timeout(8000),
+  });
   if (!res.ok) throw new Error(`GitHub API ${res.status}`);
   const releases = (await res.json()) as GhRelease[];
   if (!Array.isArray(releases) || releases.length === 0) {
